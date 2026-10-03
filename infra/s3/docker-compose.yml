@@ -1,0 +1,28 @@
+# Local S3-compatible object storage for development and the opt-in integration tests.
+#   docker compose -f infra/s3/docker-compose.yml up -d
+# S3 API:  http://localhost:9000      Credentials: lmsadmin / lmsadmin-secret   (development only; never reuse)
+#
+# Point the API at it:
+#   Storage__Provider=S3
+#   Storage__S3__ServiceUrl=http://localhost:9000
+#   Storage__S3__Bucket=lms
+#   Storage__S3__ForcePathStyle=true
+#   Storage__S3__CreateBucket=true
+#   Storage__S3__AccessKeyId=lmsadmin
+#   Storage__S3__SecretAccessKey=lmsadmin-secret
+#
+# RustFS is used because MinIO no longer publishes community images to public registries. Any S3-compatible
+# server works the same way, including AWS S3 itself (leave ServiceUrl empty and set Region).
+services:
+  s3:
+    image: rustfs/rustfs:latest
+    ports:
+      - "9000:9000"
+    environment:
+      RUSTFS_ACCESS_KEY: lmsadmin
+      RUSTFS_SECRET_KEY: lmsadmin-secret
+    volumes:
+      - s3-data:/data
+
+volumes:
+  s3-data:

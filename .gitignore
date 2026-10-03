@@ -1,0 +1,53 @@
+# Build output
+bin/
+obj/
+dist/
+out/
+*.tsbuildinfo
+
+# Dependencies
+node_modules/
+
+# Secrets and local settings
+.env
+.env.*
+!.env.example
+*.user
+*.suo
+appsettings.Development.local.json
+appsettings.Local.json
+secrets.json
+data-protection-keys/
+
+# Files created while running the app (uploads, videos, recordings, local storage)
+src/Lms.Api/content-assets/
+src/Lms.Api/storage/
+src/Lms.Api/App_Data/
+*.log
+logs/
+
+# Test output
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+coverage/
+TestResults/
+*.trx
+
+# Editor and OS files
+.vs/
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Local tool scratch folders
+.codex-temp/
+.claude/
+
+# End-to-end run data (database, uploads, videos)
+.e2e/
