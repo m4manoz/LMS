@@ -34,3 +34,42 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
+
+  deploy:
+    # Test-environment CD: only on pushes to main, only after the checks above pass.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [api, web]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: deploy-lms
+      cancel-in-progress: false
+    env:
+      TAG: ${{ github.sha }}
+      REMOTE: ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}
+      APP_DIR: kalash/lms
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        run: |
+          install -m 700 -d ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          echo "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          printf 'Host *\n  IdentityFile ~/.ssh/id_deploy\n  IdentitiesOnly yes\n' > ~/.ssh/config
+
+      - name: Build images
+        run: |
+          docker build -f src/Lms.Api/Dockerfile -t lms-api:$TAG .
+          docker build -t lms-web:$TAG src/Lms.Web
+
+      - name: Ship images to server
+        run: docker save lms-api:$TAG lms-web:$TAG | gzip | ssh $REMOTE 'gunzip | docker load'
+
+      - name: Roll out
+        run: |
+          scp deploy/docker-compose.yml $REMOTE:$APP_DIR/docker-compose.yml
+          ssh $REMOTE "cd $APP_DIR && sed -i '/^TAG=/d' .env && echo TAG=$TAG >> .env && docker compose up -d --wait --wait-timeout 180 --remove-orphans" \
+            || { ssh $REMOTE "cd $APP_DIR && docker compose ps && docker compose logs --tail=80 api"; exit 1; }
+          ssh $REMOTE "docker image prune -af --filter 'until=72h'"

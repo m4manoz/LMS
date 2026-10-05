@@ -1,0 +1,54 @@
+# LMS test deployment. Lives on the server in ~/kalash/lms next to a .env file (see .env.example).
+# The CD workflow copies this file there and runs:  TAG=<sha> docker compose up -d
+name: lms
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: lms
+      POSTGRES_USER: lms
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lms -d lms"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    image: lms-api:${TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      ConnectionStrings__Default: Host=db;Port=5432;Database=lms;Username=lms;Password=${DB_PASSWORD}
+      Auth__SigningKey: ${AUTH_SIGNING_KEY:?set AUTH_SIGNING_KEY in .env}
+      Platform__ProvisioningKey: ${PLATFORM_PROVISIONING_KEY:?set PLATFORM_PROVISIONING_KEY in .env}
+      DataProtection__KeyStoragePath: /data/keys
+      Storage__LocalRoot: /data/content-assets
+      LiveClasses__FrontendBaseUrl: ${PUBLIC_URL}
+      Frontend__AllowedOrigins__0: ${PUBLIC_URL}
+    volumes:
+      - api-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080 && printf \"GET /health/live HTTP/1.0\r\n\r\n\" >&3 && grep -q 200 <&3'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  web:
+    image: lms-web:${TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "${WEB_PORT:-8081}:80"
+
+volumes:
+  db-data:
+  api-data:
