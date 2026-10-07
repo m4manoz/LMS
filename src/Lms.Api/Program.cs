@@ -256,6 +256,7 @@ using (var scope = app.Services.CreateScope())
     _ = scope.ServiceProvider.GetRequiredService<IContentAssetStorage>(); // validates the storage configuration
     if (scope.ServiceProvider.GetService<IObjectStore>() is { } objectStore && app.Configuration.GetValue("Storage:S3:CreateBucket", false))
         await objectStore.EnsureBucketAsync(CancellationToken.None); // development convenience (MinIO)
+    await DevelopmentSeed.SeedAsync(db, scope.ServiceProvider.GetRequiredService<PasswordService>(), builder.Configuration, app.Environment, CancellationToken.None);
     await IdentityEndpoints.EnsureDefaultRolesForAllTenantsAsync(db, CancellationToken.None);
     await NotificationService.EnsureDefaultTemplatesForAllTenantsAsync(db, CancellationToken.None);
     await CertificateEndpoints.EnsureDefaultTemplateForAllTenantsAsync(db, CancellationToken.None);

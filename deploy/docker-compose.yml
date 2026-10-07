@@ -25,6 +25,9 @@ services:
       db:
         condition: service_healthy
     environment:
+      # Test server runs in Development so the demo tenant, admin and sample data are seeded on start.
+      ASPNETCORE_ENVIRONMENT: Development
+      Seed__DevData__Enabled: "true"
       ConnectionStrings__Default: Host=db;Port=5432;Database=lms;Username=lms;Password=${DB_PASSWORD}
       Auth__SigningKey: ${AUTH_SIGNING_KEY:?set AUTH_SIGNING_KEY in .env}
       Platform__ProvisioningKey: ${PLATFORM_PROVISIONING_KEY:?set PLATFORM_PROVISIONING_KEY in .env}
