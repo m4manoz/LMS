@@ -18,6 +18,9 @@ public static class SecurityEndpoints
             return await next(context);
         });
         tenant.MapGet("/permissions", () => Results.Ok(LmsPermissions.All.Order())).RequireAuthorization("tenant.role.read");
+        // The same permissions grouped by module, with a plain-language name and description for each, for the role screens.
+        tenant.MapGet("/permission-catalog", () => Results.Ok(PermissionCatalog.All.GroupBy(item => item.Module).OrderBy(group => group.First().ModuleOrder)
+            .Select(group => new PermissionModuleResponse(group.Key, group.First().ModuleTitle, group.Select(item => new PermissionItemResponse(item.Code, item.Label, item.Description)).ToArray())).ToArray())).RequireAuthorization("tenant.role.read");
         tenant.MapGet("/audit-events", ListAuditEventsAsync).RequireAuthorization("tenant.security.read");
     }
 
@@ -31,3 +34,6 @@ public static class SecurityEndpoints
 }
 
 public sealed record SecurityAuditResponse(Guid Id, Guid? ActorUserId, string Action, string ResourceType, Guid? ResourceId, string DetailsJson, string? IpAddress, DateTimeOffset CreatedAtUtc);
+
+public sealed record PermissionItemResponse(string Code, string Label, string Description);
+public sealed record PermissionModuleResponse(string Module, string Title, PermissionItemResponse[] Permissions);

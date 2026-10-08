@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { ApiError, apiRequest } from '../lib/api'
 import { useAuth } from '../lib/auth'
+import { groupFlat, PermissionPicker, PermissionSummary, type PermissionModule } from './PermissionGroups'
 
 type Role = { id: string; code: string; name: string; isSystemRole: boolean; permissions: string[] }
 type User = { id: string; email: string; displayName: string; userStatus: string; membershipStatus: string; roleCode: string; roleName: string; roleCodes?: string[] }
@@ -24,6 +25,8 @@ export default function RbacPage({ initialTab = 'users' }: { initialTab?: 'users
   const [roles, setRoles] = useState<Role[]>([])
   const [users, setUsers] = useState<User[]>([])
   const [permissions, setPermissions] = useState<string[]>([])
+  const [catalog, setCatalog] = useState<PermissionModule[] | null>(null)
+  const [editingRole, setEditingRole] = useState<Role | null>(null)
   const [audit, setAudit] = useState<AuditEvent[]>([])
   const [code, setCode] = useState('')
   const [name, setName] = useState('')
@@ -48,14 +51,18 @@ export default function RbacPage({ initialTab = 'users' }: { initialTab?: 'users
       const requests: Promise<unknown>[] = [apiRequest<Role[]>('/api/v1/tenant/roles'), apiRequest<User[]>('/api/v1/tenant/users'), apiRequest<string[]>('/api/v1/tenant/security/permissions')]
       if (canAudit) requests.push(apiRequest<AuditEvent[]>('/api/v1/tenant/security/audit-events'))
       const values = await Promise.all(requests)
+      // The same permissions grouped by module with plain names; if that list cannot be read the codes are grouped by their first word.
+      apiRequest<PermissionModule[]>('/api/v1/tenant/security/permission-catalog').then((list) => setCatalog(Array.isArray(list) ? list : null)).catch(() => setCatalog(null))
       setRoles(values[0] as Role[]); setUsers(values[1] as User[]); setPermissions(values[2] as string[]); if (canAudit) setAudit(values[3] as AuditEvent[])
     } catch (exception) { setError(readError(exception, 'Unable to load access control data.')) }
   }
 
   useEffect(() => { void refresh() }, [canAudit])
 
-  const openRole = () => { setCode(''); setName(''); setSelectedPermissions(defaultPermissions); setProblem(null); setNotice(null); setCreatingRole(true) }
-  const closeRole = () => setCreatingRole(false)
+  const modules = catalog ?? groupFlat(permissions)
+  const openRole = () => { setEditingRole(null); setCode(''); setName(''); setSelectedPermissions(defaultPermissions); setProblem(null); setNotice(null); setCreatingRole(true) }
+  const openEdit = (role: Role) => { setEditingRole(role); setCode(role.code); setName(role.name); setSelectedPermissions(role.permissions); setProblem(null); setNotice(null); setViewRole(null); setCreatingRole(true) }
+  const closeRole = () => { setCreatingRole(false); setEditingRole(null) }
   const openUser = () => { setUserEmail(''); setUserName(''); setUserPassword(''); setUserRole(''); setProblem(null); setNotice(null); setCreatingUser(true) }
   const closeUser = () => setCreatingUser(false)
 
@@ -64,8 +71,12 @@ export default function RbacPage({ initialTab = 'users' }: { initialTab?: 'users
     if (!code.trim()) { setProblem('Enter a role code.'); return }
     if (!name.trim()) { setProblem('Enter a role name.'); return }
     setBusy(true); setError(null); setProblem(null)
-    try { await apiRequest('/api/v1/tenant/roles', { method: 'POST', body: JSON.stringify({ code, name, permissions: selectedPermissions }) }); setCreatingRole(false); setNotice(`Role “${name}” created.`); await refresh(); setTab('roles') }
-    catch (exception) { setProblem(readError(exception, 'Unable to create the role.')) }
+    try {
+      if (editingRole) await apiRequest(`/api/v1/tenant/roles/${editingRole.id}`, { method: 'PUT', body: JSON.stringify({ code, name, permissions: selectedPermissions }) })
+      else await apiRequest('/api/v1/tenant/roles', { method: 'POST', body: JSON.stringify({ code, name, permissions: selectedPermissions }) })
+      setCreatingRole(false); setNotice(`Role “${name}” ${editingRole ? 'saved' : 'created'}.`); setEditingRole(null); await refresh(); setTab('roles')
+    }
+    catch (exception) { setProblem(readError(exception, editingRole ? 'Unable to save the role.' : 'Unable to create the role.')) }
     finally { setBusy(false) }
   }
 
@@ -90,8 +101,6 @@ export default function RbacPage({ initialTab = 'users' }: { initialTab?: 'users
     catch (exception) { setError(readError(exception, 'Unable to assign the role.')) }
     finally { setBusy(false) }
   }
-
-  function togglePermission(permission: string) { setSelectedPermissions(current => current.includes(permission) ? current.filter(item => item !== permission) : [...current, permission]) }
 
   const userNeedle = userSearch.trim().toLowerCase()
   const shownUsers = users.filter(user => !userNeedle || `${user.displayName} ${user.email} ${(user.roleCodes ?? [user.roleCode]).join(' ')}`.toLowerCase().includes(userNeedle))
@@ -183,36 +192,30 @@ export default function RbacPage({ initialTab = 'users' }: { initialTab?: 'users
         {viewRole ? (
           <div className="flex max-w-3xl flex-col gap-4">
             <div><h3 className="text-lg font-semibold">{viewRole.name}</h3><p className="text-sm text-muted-foreground">{viewRole.code} · {viewRole.isSystemRole ? 'System role' : 'Custom role'}</p></div>
-            <h4 className="text-sm font-semibold">Permissions ({viewRole.permissions.length})</h4>
-            {viewRole.permissions.length === 0 ? <EmptyState>This role grants no permissions.</EmptyState> : (
-              <ul className="grid gap-1 rounded-md border border-border p-3 text-sm sm:grid-cols-2">
-                {viewRole.permissions.map(permission => <li key={permission}>{permission}</li>)}
-              </ul>
-            )}
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h4 className="text-sm font-semibold">Permissions ({viewRole.permissions.length})</h4>
+              {canManage && !viewRole.isSystemRole ? <Button type="button" size="sm" variant="secondary" onClick={() => openEdit(viewRole)}>Edit role</Button> : null}
+            </div>
+            {viewRole.permissions.length === 0 ? <EmptyState>This role grants no permissions.</EmptyState> : <PermissionSummary modules={modules} granted={viewRole.permissions} />}
+            {viewRole.isSystemRole ? <p className="text-sm text-muted-foreground">System roles cannot be edited. Create a custom role to give a different set of permissions.</p> : null}
           </div>
         ) : null}
       </SidePanel>
 
-      <SidePanel open={creatingRole} label="New role" onClose={closeRole}>
+      <SidePanel open={creatingRole} label={editingRole ? 'Edit role' : 'New role'} onClose={closeRole}>
         <FormLayout onSubmit={createRole}>
           <ErrorBanner message={problem} />
-          <FormSection title="About the role" description="Pick the permissions the role grants.">
+          <FormSection title="About the role" description="Pick the permissions the role grants, module by module. Changes take effect when the people with this role sign in again.">
             <div className="grid gap-3 sm:grid-cols-2">
               <Field id="role-code" label="Role code" required><Input id="role-code" value={code} onChange={event => setCode(event.target.value)} placeholder="ROLE_CODE" maxLength={80} /></Field>
               <Field id="role-name" label="Role name" required><Input id="role-name" value={name} onChange={event => setName(event.target.value)} placeholder="Role name" maxLength={150} /></Field>
             </div>
           </FormSection>
           <FormSection title="Permissions">
-            <div className="grid max-h-72 gap-1 overflow-y-auto rounded-md border border-border p-2 text-sm sm:grid-cols-2">
-              {permissions.map(permission => (
-                <label key={permission} className="flex items-center gap-2">
-                  <input type="checkbox" checked={selectedPermissions.includes(permission)} onChange={() => togglePermission(permission)} />
-                  {permission}
-                </label>
-              ))}
-            </div>
+            <p className="text-sm text-muted-foreground">{selectedPermissions.length} permission{selectedPermissions.length === 1 ? '' : 's'} chosen.</p>
+            <PermissionPicker modules={modules} selected={selectedPermissions} onChange={setSelectedPermissions} />
           </FormSection>
-          <FormActions busy={busy} submitLabel="Create role" onCancel={closeRole} />
+          <FormActions busy={busy} submitLabel={editingRole ? 'Save role' : 'Create role'} onCancel={closeRole} />
         </FormLayout>
       </SidePanel>
 
