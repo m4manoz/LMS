@@ -2,7 +2,7 @@ import { ApiError } from './api'
 
 // What an organization's public front page is made of. The shapes follow the server's.
 export type LandingHero = { title: string; subtitle: string; primaryLabel: string; primaryLink: string; searchPlaceholder: string }
-export type LandingBanner = { id: string; title: string; text: string; buttonLabel: string; link: string; theme: string }
+export type LandingBanner = { id: string; title: string; text: string; buttonLabel: string; link: string; theme: string; imageId?: string }
 export type LandingLink = { label: string; link: string }
 export type LandingRow = { id: string; title: string; subtitle: string | null; mode: string; categoryId: string | null; courseIds: string[]; limit: number }
 export type LandingFeature = { title: string; text: string; icon: string }
@@ -29,14 +29,22 @@ export type LandingContent = {
   footerAbout: string
   footerGroups: LandingFooterGroup[]
   copyright: string
+  /** Ids of pictures the organization uploaded (empty or missing for none). */
+  logoImageId?: string
+  heroImageId?: string
 }
 
+/** A picture an organization uploaded for its page. */
+export type LandingPicture = { id: string; fileName: string; sizeBytes: number }
+/** Where a public page picture is loaded from; anyone can load it, so it needs no sign-in. */
+export const landingImageUrl = (slug: string, id: string) => `/api/v1/public/${encodeURIComponent(slug)}/landing-images/${id}`
+
 export type PublicOrganization = { slug: string; name: string }
-export type PublicCourse = { id: string; code: string; title: string; summary: string; categoryId: string | null; category: string | null; teacher: string | null; startDate: string | null; endDate: string | null; seatsLeft: number | null }
+export type PublicCourse = { id: string; code: string; title: string; summary: string; categoryId: string | null; category: string | null; teacher: string | null; startDate: string | null; endDate: string | null; seatsLeft: number | null; ratingAverage?: number | null; ratingCount?: number }
 export type PublicCategory = { id: string; name: string; courses: number }
 export type PublicRow = { id: string; title: string; subtitle: string | null; courseIds: string[] }
 export type PublicLanding = { organization: PublicOrganization; content: LandingContent; courses: PublicCourse[]; categories: PublicCategory[]; rows: PublicRow[] }
-export type PublicCourseDetail = { id: string; code: string; title: string; description: string | null; category: string | null; teacher: string | null; startDate: string | null; endDate: string | null; seatsLeft: number | null; modules: { title: string; lessons: string[] }[] }
+export type PublicCourseDetail = { id: string; code: string; title: string; description: string | null; category: string | null; teacher: string | null; startDate: string | null; endDate: string | null; seatsLeft: number | null; modules: { title: string; lessons: string[] }[]; rating?: { average: number | null; count: number; distribution: number[] } | null; reviews?: { stars: number; text: string; author: string; atUtc: string }[] | null }
 export type ApplicationForm = { fullName: string; email: string; phone: string; message: string; website: string }
 
 /** The content management screen's view: the content, whether it is still the default, and the choices the editor offers. */

@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import CourseContentEditor, { blockFields, toBody } from './CourseContentEditor'
@@ -63,6 +63,27 @@ describe('CourseContentEditor', () => {
     expect(screen.getByText(/no longer a draft/)).toBeInTheDocument()
   })
 
+  it('sets whether watching the lesson\'s videos completes it, and shows the current choice', async () => {
+    const withRule = [{ id: 'm1', title: 'Module 1', lessons: [{ id: 'l1', title: 'Lesson 1', completeWhenVideosWatched: true }, { id: 'l2', title: 'Lesson 2' }] }]
+    render(<CourseContentEditor courseId="c" modules={withRule} editable />)
+    const box = await screen.findByRole('checkbox', { name: /Complete this lesson when its videos have been watched/ })
+    expect(box).toBeChecked()
+    await userEvent.click(box)
+    expect(request).toHaveBeenCalledWith('/api/v1/tenant/courses/c/lessons/l1/completion-rule', { method: 'PUT', body: JSON.stringify({ completeWhenVideosWatched: false }) })
+    await waitFor(() => expect(box).not.toBeChecked())
+
+    await userEvent.selectOptions(screen.getByLabelText('Lesson'), 'l2')
+    const other = screen.getByRole('checkbox', { name: /Complete this lesson when its videos have been watched/ })
+    expect(other).not.toBeChecked()
+    await userEvent.click(other)
+    expect(request).toHaveBeenCalledWith('/api/v1/tenant/courses/c/lessons/l2/completion-rule', { method: 'PUT', body: JSON.stringify({ completeWhenVideosWatched: true }) })
+    await waitFor(() => expect(other).toBeChecked())
+  })
+
+  it('cannot change the rule once the course is no longer a draft', async () => {
+    render(<CourseContentEditor courseId="c" modules={modules} editable={false} />)
+    expect(await screen.findByRole('checkbox', { name: /Complete this lesson when its videos have been watched/ })).toBeDisabled()
+  })
   it('reorders by sending the full new order', async () => {
     render(<CourseContentEditor courseId="c" modules={modules} editable />)
     await userEvent.click(await screen.findByRole('button', { name: 'Move block 2 up' }))

@@ -101,6 +101,8 @@ export const menuGroups: MenuGroup[] = [
           { id: "applications", label: "Applications", icon: "📝", permissions: ["enrollment.manage"] },
           { id: "schedule-class", label: "Schedule class", icon: "🗓", permissions: ["liveclass.manage"] },
           { id: "cohorts", label: "Cohorts", icon: "👥", permissions: ["enrollment.manage"] },
+          { id: "learners", label: "Learners", icon: "🎓", permissions: ["user.read", "enrollment.manage"] },
+          { id: "instructors", label: "Instructors", icon: "🧑‍🏫", permissions: ["user.read", "enrollment.manage"] },
         ],
       },
     ],
@@ -185,8 +187,6 @@ export const menuGroups: MenuGroup[] = [
 /** Older links and bookmarks still work: these ids open the same page as their replacement. */
 export const menuAliases: Record<string, string> = {
   "communication-notifications": "notifications",
-  instructors: "users",
-  learners: "users",
 };
 
 export function canViewMenuItem(item: MenuItem, role: string, permissions: string[]) {

@@ -1,16 +1,19 @@
 using System.Security.Claims;
+using System.Text.Json;
 using Lms.Api.Domain.Courses;
 using Lms.Api.Domain.Identity;
 using Lms.Api.Domain.Learning;
 using Lms.Api.Domain.Messaging;
+using Lms.Api.Infrastructure.Messaging;
 using Lms.Api.Infrastructure.Persistence;
+using Lms.Api.Infrastructure.Storage;
 using Lms.Api.Infrastructure.Tenancy;
 using Microsoft.EntityFrameworkCore;
 
 namespace Lms.Api.Features.Messaging;
 
 /// <summary>
-/// Direct messages and course chats.
+/// Direct messages and course chats: text, one file per message, editing and deleting your own messages, and live updates.
 /// Privacy rule: learners may start direct conversations only with staff (people who can manage courses or grades),
 /// never with other learners, unless the tenant sets Messaging:AllowLearnerToLearner.
 /// </summary>
@@ -18,6 +21,9 @@ public static class MessagingEndpoints
 {
     private const int MaxBodyLength = 5000;
     private const int PageSize = 100;
+    /// <summary>A live connection is closed after this long and the browser reconnects, so a connection never outlives the sign-in it started with by much.</summary>
+    private static readonly TimeSpan StreamLifetime = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan StreamPing = TimeSpan.FromSeconds(25);
 
     public static void MapMessagingEndpoints(this WebApplication app)
     {
@@ -38,6 +44,11 @@ public static class MessagingEndpoints
         tenant.MapGet("/conversations/{conversationId:guid}/messages", ListMessagesAsync).RequireAuthorization("tenant.collaboration.read");
         tenant.MapPost("/conversations/{conversationId:guid}/messages", SendAsync).RequireAuthorization("tenant.collaboration.manage");
         tenant.MapPost("/conversations/{conversationId:guid}/read", MarkReadAsync).RequireAuthorization("tenant.collaboration.read");
+        tenant.MapPost("/conversations/{conversationId:guid}/messages/upload", SendWithFileAsync).RequireAuthorization("tenant.collaboration.manage");
+        tenant.MapPut("/conversations/{conversationId:guid}/messages/{messageId:guid}", EditAsync).RequireAuthorization("tenant.collaboration.manage");
+        tenant.MapDelete("/conversations/{conversationId:guid}/messages/{messageId:guid}", DeleteAsync).RequireAuthorization("tenant.collaboration.manage");
+        tenant.MapGet("/conversations/{conversationId:guid}/messages/{messageId:guid}/attachment", DownloadAsync).RequireAuthorization("tenant.collaboration.read");
+        tenant.MapGet("/stream", StreamAsync).RequireAuthorization("tenant.collaboration.read");
     }
 
     // ---------- contacts ----------
@@ -78,7 +89,7 @@ public static class MessagingEndpoints
                 ? names.GetValueOrDefault(OtherUser(conversation, userId), "Unknown")
                 : courseTitles.GetValueOrDefault(conversation.CourseId ?? Guid.Empty, "Course") + " · course chat";
             return new ConversationSummary(conversation.Id, conversation.Kind.ToString(), title, conversation.CourseId,
-                message is null ? null : Preview(message.Body), message?.CreatedAtUtc ?? conversation.CreatedAtUtc, unread.GetValueOrDefault(conversation.Id));
+                message is null ? null : PreviewOf(message), message?.CreatedAtUtc ?? conversation.CreatedAtUtc, unread.GetValueOrDefault(conversation.Id));
         }).OrderByDescending(item => item.LastActivityAtUtc).ToList();
         return Results.Ok(result);
     }
@@ -143,25 +154,153 @@ public static class MessagingEndpoints
         messages.Reverse();
         var senderIds = messages.Select(item => item.SenderUserId).Distinct().ToList();
         var names = await db.Users.AsNoTracking().Where(item => senderIds.Contains(item.Id)).ToDictionaryAsync(item => item.Id, item => item.DisplayName, cancellationToken);
-        return Results.Ok(messages.Select(item => new MessageResponse(item.Id, item.SenderUserId, names.GetValueOrDefault(item.SenderUserId, "Unknown"), item.Body, item.CreatedAtUtc, item.SenderUserId == userId)));
+        return Results.Ok(messages.Select(item => ToResponse(item, names.GetValueOrDefault(item.SenderUserId, "Unknown"), userId)));
     }
 
-    private static async Task<IResult> SendAsync(Guid conversationId, HttpContext httpContext, ITenantContext tenantContext, LmsDbContext db, SendMessageRequest request, CancellationToken cancellationToken)
+    private static MessageResponse ToResponse(ConversationMessage item, string senderName, Guid viewerId)
+        => new(item.Id, item.SenderUserId, senderName, item.DeletedAtUtc is null ? item.Body : string.Empty, item.CreatedAtUtc, item.SenderUserId == viewerId,
+            item.EditedAtUtc, item.DeletedAtUtc is not null,
+            item.DeletedAtUtc is null && item.AttachmentKey is not null ? new AttachmentView(item.AttachmentName ?? "file", item.AttachmentSizeBytes ?? 0, item.AttachmentContentType ?? "application/octet-stream") : null);
+
+    private static string PreviewOf(ConversationMessage message)
+        => message.DeletedAtUtc is not null ? "Message deleted"
+            : message.Body.Length == 0 && message.AttachmentName is not null ? $"Attachment: {message.AttachmentName}" : Preview(message.Body);
+
+    /// <summary>Who must be told about a change: the two people of a direct conversation, or (null) everyone who can reach the course.</summary>
+    private static async Task<IReadOnlyList<Guid>?> RecipientsAsync(LmsDbContext db, Conversation conversation, CancellationToken cancellationToken)
+        => conversation.Kind == ConversationKind.Direct
+            ? await db.ConversationParticipants.AsNoTracking().Where(item => item.ConversationId == conversation.Id).Select(item => item.UserId).ToListAsync(cancellationToken)
+            : null;
+
+    private static async Task PublishAsync(MessageHub hub, LmsDbContext db, string type, Conversation conversation, Guid? messageId, CancellationToken cancellationToken)
+        => hub.Publish(new MessageEvent(type, conversation.TenantId, conversation.Id, messageId, conversation.CourseId, await RecipientsAsync(db, conversation, cancellationToken)));
+
+    private static Task<IResult> SendAsync(Guid conversationId, HttpContext httpContext, ITenantContext tenantContext, LmsDbContext db, MessageHub hub, SendMessageRequest request, CancellationToken cancellationToken)
+        => StoreMessageAsync(conversationId, httpContext, tenantContext, db, hub, request.Body, null, null, cancellationToken);
+
+    private static async Task<IResult> SendWithFileAsync(Guid conversationId, HttpRequest request, ITenantContext tenantContext, LmsDbContext db, MessageHub hub, IContentAssetStorage storage, CancellationToken cancellationToken)
+    {
+        var (file, form) = await AttachmentRules.ReadAsync(request, cancellationToken);
+        if (AttachmentRules.Problem(file) is { } rejected) return Results.BadRequest(new { message = rejected });
+        return await StoreMessageAsync(conversationId, request.HttpContext, tenantContext, db, hub, form?["body"].ToString(), file, storage, cancellationToken);
+    }
+
+    private static async Task<IResult> StoreMessageAsync(Guid conversationId, HttpContext httpContext, ITenantContext tenantContext, LmsDbContext db, MessageHub hub, string? text, IFormFile? file, IContentAssetStorage? storage, CancellationToken cancellationToken)
     {
         if (tenantContext.TenantId is not Guid tenantId || GetUserId(httpContext) is not Guid userId) return Results.Unauthorized();
-        var body = request.Body?.Trim() ?? string.Empty;
-        if (body.Length is < 1 or > MaxBodyLength) return Results.BadRequest(new { message = $"A message must be between 1 and {MaxBodyLength} characters." });
+        var body = text?.Trim() ?? string.Empty;
+        // A message needs words, a file, or both.
+        if (body.Length > MaxBodyLength || (body.Length == 0 && file is null)) return Results.BadRequest(new { message = $"A message must be between 1 and {MaxBodyLength} characters." });
         var conversation = await FindAccessibleAsync(db, httpContext, userId, conversationId, cancellationToken);
         if (conversation is null) return Results.NotFound();
 
         var now = DateTimeOffset.UtcNow;
         var message = new ConversationMessage { Id = Guid.NewGuid(), TenantId = tenantId, ConversationId = conversationId, SenderUserId = userId, Body = body, CreatedAtUtc = now };
+        if (file is not null && storage is not null)
+        {
+            var stored = await storage.SaveAsync(tenantId, conversation.CourseId ?? Guid.Empty, file, cancellationToken);
+            message.AttachmentKey = stored.StorageKey; message.AttachmentName = stored.OriginalFileName; message.AttachmentContentType = stored.ContentType; message.AttachmentSizeBytes = stored.SizeBytes;
+        }
         db.ConversationMessages.Add(message);
         var tracked = await db.Conversations.SingleAsync(item => item.Id == conversationId, cancellationToken);
         tracked.LastMessageAtUtc = now;
         await TouchParticipantAsync(db, tenantId, conversationId, userId, now, cancellationToken); // sending counts as reading up to now
         await db.SaveChangesAsync(cancellationToken);
-        return Results.Created($"/api/v1/tenant/messages/conversations/{conversationId}/messages", new MessageResponse(message.Id, userId, "You", body, now, true));
+        await PublishAsync(hub, db, "message", conversation, message.Id, cancellationToken);
+        return Results.Created($"/api/v1/tenant/messages/conversations/{conversationId}/messages", ToResponse(message, "You", userId));
+    }
+
+    private static async Task<IResult> EditAsync(Guid conversationId, Guid messageId, HttpContext httpContext, LmsDbContext db, MessageHub hub, SendMessageRequest request, CancellationToken cancellationToken)
+    {
+        if (GetUserId(httpContext) is not Guid userId) return Results.Unauthorized();
+        var conversation = await FindAccessibleAsync(db, httpContext, userId, conversationId, cancellationToken);
+        var message = conversation is null ? null : await db.ConversationMessages.SingleOrDefaultAsync(item => item.Id == messageId && item.ConversationId == conversationId, cancellationToken);
+        if (conversation is null || message is null || message.DeletedAtUtc is not null) return Results.NotFound();
+        // Only the sender changes their own words; nobody, moderators included, can put words in someone else's mouth.
+        if (message.SenderUserId != userId) return Results.Json(new { message = "You can only edit your own messages." }, statusCode: StatusCodes.Status403Forbidden);
+        var body = request.Body?.Trim() ?? string.Empty;
+        if (body.Length > MaxBodyLength || (body.Length == 0 && message.AttachmentKey is null)) return Results.BadRequest(new { message = $"A message must be between 1 and {MaxBodyLength} characters." });
+        if (body != message.Body)
+        {
+            message.Body = body;
+            message.EditedAtUtc = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(cancellationToken);
+            await PublishAsync(hub, db, "edited", conversation, message.Id, cancellationToken);
+        }
+        return Results.Ok(ToResponse(message, "You", userId));
+    }
+
+    private static async Task<IResult> DeleteAsync(Guid conversationId, Guid messageId, HttpContext httpContext, LmsDbContext db, MessageHub hub, IContentAssetStorage storage, CancellationToken cancellationToken)
+    {
+        if (GetUserId(httpContext) is not Guid userId) return Results.Unauthorized();
+        var conversation = await FindAccessibleAsync(db, httpContext, userId, conversationId, cancellationToken);
+        var message = conversation is null ? null : await db.ConversationMessages.SingleOrDefaultAsync(item => item.Id == messageId && item.ConversationId == conversationId, cancellationToken);
+        if (conversation is null || message is null) return Results.NotFound();
+        // The sender may delete their message; in a course chat, a moderator may remove anyone's.
+        var moderates = conversation.Kind == ConversationKind.Course && HasPermission(httpContext, LmsPermissions.ForumModerate);
+        if (message.SenderUserId != userId && !moderates) return Results.Json(new { message = "You can only delete your own messages." }, statusCode: StatusCodes.Status403Forbidden);
+        if (message.DeletedAtUtc is not null) return Results.NoContent();
+
+        var key = message.AttachmentKey;
+        message.DeletedAtUtc = DateTimeOffset.UtcNow;
+        message.Body = string.Empty;
+        message.AttachmentKey = null; message.AttachmentName = null; message.AttachmentContentType = null; message.AttachmentSizeBytes = null;
+        await db.SaveChangesAsync(cancellationToken);
+        if (key is not null) await storage.DeleteAsync(key, cancellationToken);
+        await PublishAsync(hub, db, "deleted", conversation, message.Id, cancellationToken);
+        return Results.NoContent();
+    }
+
+    private static async Task<IResult> DownloadAsync(Guid conversationId, Guid messageId, HttpContext httpContext, LmsDbContext db, IContentAssetStorage storage, CancellationToken cancellationToken)
+    {
+        if (GetUserId(httpContext) is not Guid userId) return Results.Unauthorized();
+        if (await FindAccessibleAsync(db, httpContext, userId, conversationId, cancellationToken) is null) return Results.NotFound();
+        var message = await db.ConversationMessages.AsNoTracking().SingleOrDefaultAsync(item => item.Id == messageId && item.ConversationId == conversationId, cancellationToken);
+        if (message?.AttachmentKey is null || message.DeletedAtUtc is not null) return Results.NotFound();
+        var stream = await storage.OpenReadAsync(message.AttachmentKey, cancellationToken);
+        return stream is null ? Results.NotFound() : Results.File(stream, "application/octet-stream", message.AttachmentName ?? "attachment");
+    }
+
+    /// <summary>
+    /// Server-sent events: the browser keeps this request open and is told the moment a conversation it can reach changes.
+    /// The signal holds no message text; the browser fetches the messages through the normal, access-checked calls.
+    /// </summary>
+    private static async Task StreamAsync(HttpContext httpContext, ITenantContext tenantContext, LmsDbContext db, MessageHub hub, CancellationToken requestAborted)
+    {
+        if (tenantContext.TenantId is not Guid tenantId || GetUserId(httpContext) is not Guid userId) { httpContext.Response.StatusCode = StatusCodes.Status401Unauthorized; return; }
+        var response = httpContext.Response;
+        response.Headers.ContentType = "text/event-stream";
+        response.Headers.CacheControl = "no-cache";
+        response.Headers["X-Accel-Buffering"] = "no";   // tell a reverse proxy not to hold the events back
+        await response.WriteAsync(": connected\n\n", requestAborted);
+        await response.Body.FlushAsync(requestAborted);
+
+        using var subscription = hub.Subscribe(tenantId, userId);
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(requestAborted);
+        lifetime.CancelAfter(StreamLifetime);
+        var manager = HasPermission(httpContext, LmsPermissions.CourseManage);
+        try
+        {
+            while (!lifetime.IsCancellationRequested)
+            {
+                using var wait = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+                wait.CancelAfter(StreamPing);
+                MessageEvent? signal = null;
+                try { if (await subscription.Events.Reader.WaitToReadAsync(wait.Token)) subscription.Events.Reader.TryRead(out signal); else break; }
+                catch (OperationCanceledException) when (!lifetime.IsCancellationRequested) { /* quiet for a while: send a ping so the connection stays open */ }
+
+                if (signal is null) { await response.WriteAsync(": ping\n\n", lifetime.Token); }
+                else
+                {
+                    // A course chat's signal goes to people who can reach that course (checked now, so leaving a course stops the signals).
+                    if (signal.Recipients is null && !manager && !(signal.CourseId is Guid courseId && await db.Enrollments.AsNoTracking().AnyAsync(item => item.CourseId == courseId && item.LearnerUserId == userId && (item.Status == EnrollmentStatus.Active || item.Status == EnrollmentStatus.Completed), lifetime.Token))) continue;
+                    var data = JsonSerializer.Serialize(new { type = signal.Type, conversationId = signal.ConversationId, messageId = signal.MessageId }, JsonSerializerOptions.Web);
+                    await response.WriteAsync($"event: message\ndata: {data}\n\n", lifetime.Token);
+                }
+                await response.Body.FlushAsync(lifetime.Token);
+            }
+        }
+        catch (OperationCanceledException) { /* the browser went away, or the connection reached its lifetime: the browser reconnects */ }
     }
 
     private static async Task<IResult> MarkReadAsync(Guid conversationId, HttpContext httpContext, ITenantContext tenantContext, LmsDbContext db, CancellationToken cancellationToken)
@@ -211,7 +350,7 @@ public static class MessagingEndpoints
     private static async Task<Dictionary<Guid, int>> UnreadByConversationAsync(LmsDbContext db, Guid userId, List<Access> access, CancellationToken cancellationToken)
     {
         var ids = access.Select(item => item.Conversation.Id).ToList();
-        var messages = await db.ConversationMessages.AsNoTracking().Where(item => ids.Contains(item.ConversationId) && item.SenderUserId != userId)
+        var messages = await db.ConversationMessages.AsNoTracking().Where(item => ids.Contains(item.ConversationId) && item.SenderUserId != userId && item.DeletedAtUtc == null)
             .Select(item => new { item.ConversationId, item.CreatedAtUtc }).ToListAsync(cancellationToken);
         return access.ToDictionary(item => item.Conversation.Id, item => messages.Count(m => m.ConversationId == item.Conversation.Id && m.CreatedAtUtc > item.LastRead));
     }
@@ -257,4 +396,5 @@ public sealed record OpenCourseChatRequest(Guid CourseId);
 public sealed record SendMessageRequest(string? Body);
 public sealed record ContactResponse(Guid UserId, string Name, string Email, bool IsStaff);
 public sealed record ConversationSummary(Guid Id, string Kind, string Title, Guid? CourseId, string? LastMessagePreview, DateTimeOffset LastActivityAtUtc, int UnreadCount);
-public sealed record MessageResponse(Guid Id, Guid SenderUserId, string SenderName, string Body, DateTimeOffset CreatedAtUtc, bool IsMine);
+public sealed record AttachmentView(string FileName, long SizeBytes, string ContentType);
+public sealed record MessageResponse(Guid Id, Guid SenderUserId, string SenderName, string Body, DateTimeOffset CreatedAtUtc, bool IsMine, DateTimeOffset? EditedAtUtc = null, bool IsDeleted = false, AttachmentView? Attachment = null);

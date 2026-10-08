@@ -273,15 +273,39 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("CreatedByUserId")
                         .HasColumnType("uuid");
 
+                    b.Property<int>("CurrentVersion")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1);
+
+                    b.Property<int?>("DraftVersion")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset?>("DueAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<string>("Instructions")
                         .HasMaxLength(10000)
                         .HasColumnType("character varying(10000)");
+
+                    b.Property<DateTimeOffset?>("OpensAtUtc")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<DateTimeOffset?>("PublishedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<Guid>("QuestionBankId")
                         .HasColumnType("uuid");
+
+                    b.Property<bool>("ShuffleOptions")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
+                    b.Property<bool>("ShuffleQuestions")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
 
                     b.Property<string>("Status")
                         .IsRequired()
@@ -342,6 +366,10 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("QuestionId")
                         .HasColumnType("uuid");
 
+                    b.Property<string>("RubricScoresJson")
+                        .HasMaxLength(30000)
+                        .HasColumnType("character varying(30000)");
+
                     b.Property<int>("ScorePoints")
                         .HasColumnType("integer");
 
@@ -388,6 +416,10 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                         .HasPrecision(5, 2)
                         .HasColumnType("numeric(5,2)");
 
+                    b.Property<string>("PlanJson")
+                        .HasMaxLength(60000)
+                        .HasColumnType("character varying(60000)");
+
                     b.Property<int>("PossiblePoints")
                         .HasColumnType("integer");
 
@@ -417,6 +449,14 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid");
 
+                    b.Property<int?>("TimeLimitMinutes")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("Version")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1);
+
                     b.HasKey("Id");
 
                     b.HasIndex("AssessmentId");
@@ -429,6 +469,39 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                         .IsUnique();
 
                     b.ToTable("assessment_attempts", (string)null);
+                });
+
+            modelBuilder.Entity("Lms.Api.Domain.Assessments.AssessmentPool", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("AssessmentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("DrawCount")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AssessmentId");
+
+                    b.HasIndex("TenantId", "AssessmentId", "Version", "Name")
+                        .IsUnique();
+
+                    b.ToTable("assessment_pools", (string)null);
                 });
 
             modelBuilder.Entity("Lms.Api.Domain.Assessments.AssessmentQuestion", b =>
@@ -445,13 +518,63 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                     b.Property<int>("Points")
                         .HasColumnType("integer");
 
+                    b.Property<string>("PoolName")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<int>("Version")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1);
+
                     b.HasKey("AssessmentId", "QuestionId");
 
                     b.HasIndex("QuestionId");
 
-                    b.HasIndex("AssessmentId", "DisplayOrder");
+                    b.HasIndex("AssessmentId", "Version", "DisplayOrder");
 
                     b.ToTable("assessment_questions", (string)null);
+                });
+
+            modelBuilder.Entity("Lms.Api.Domain.Assessments.LearnerAccommodation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("CourseId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("ExtraAttempts")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("ExtraTimePercent")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("LearnerUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("UpdatedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CourseId");
+
+                    b.HasIndex("TenantId", "CourseId", "LearnerUserId")
+                        .IsUnique();
+
+                    b.ToTable("learner_accommodations", (string)null);
                 });
 
             modelBuilder.Entity("Lms.Api.Domain.Assessments.Question", b =>
@@ -484,6 +607,9 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("QuestionBankId")
                         .HasColumnType("uuid");
 
+                    b.Property<Guid?>("RubricId")
+                        .HasColumnType("uuid");
+
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid");
 
@@ -498,6 +624,8 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("QuestionBankId");
+
+                    b.HasIndex("RubricId");
 
                     b.HasIndex("TenantId", "QuestionBankId");
 
@@ -537,6 +665,50 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                     b.ToTable("question_banks", (string)null);
                 });
 
+            modelBuilder.Entity("Lms.Api.Domain.Assessments.Rubric", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("CourseId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("CriteriaJson")
+                        .IsRequired()
+                        .HasMaxLength(30000)
+                        .HasColumnType("character varying(30000)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("TotalPoints")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CourseId");
+
+                    b.HasIndex("TenantId", "CourseId", "Name")
+                        .IsUnique();
+
+                    b.ToTable("rubrics", (string)null);
+                });
+
             modelBuilder.Entity("Lms.Api.Domain.Assignments.Assignment", b =>
                 {
                     b.Property<Guid>("Id")
@@ -562,6 +734,9 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                         .HasMaxLength(20000)
                         .HasColumnType("character varying(20000)");
 
+                    b.Property<bool>("IsGroup")
+                        .HasColumnType("boolean");
+
                     b.Property<int>("LatePenaltyPercent")
                         .HasColumnType("integer");
 
@@ -570,6 +745,9 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
 
                     b.Property<DateTimeOffset?>("PublishedAtUtc")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("RubricId")
+                        .HasColumnType("uuid");
 
                     b.Property<string>("Status")
                         .IsRequired()
@@ -589,9 +767,69 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("RubricId");
+
                     b.HasIndex("TenantId", "CourseId", "DueAtUtc");
 
                     b.ToTable("assignments", (string)null);
+                });
+
+            modelBuilder.Entity("Lms.Api.Domain.Assignments.AssignmentGroup", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("AssignmentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AssignmentId");
+
+                    b.HasIndex("TenantId", "AssignmentId", "Name")
+                        .IsUnique();
+
+                    b.ToTable("assignment_groups", (string)null);
+                });
+
+            modelBuilder.Entity("Lms.Api.Domain.Assignments.AssignmentGroupMember", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("AssignmentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("GroupId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("LearnerUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("GroupId");
+
+                    b.HasIndex("TenantId", "AssignmentId", "LearnerUserId")
+                        .IsUnique();
+
+                    b.ToTable("assignment_group_members", (string)null);
                 });
 
             modelBuilder.Entity("Lms.Api.Domain.Assignments.AssignmentSubmission", b =>
@@ -632,11 +870,18 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                     b.Property<Guid?>("GradedByUserId")
                         .HasColumnType("uuid");
 
+                    b.Property<Guid?>("GroupId")
+                        .HasColumnType("uuid");
+
                     b.Property<bool>("IsLate")
                         .HasColumnType("boolean");
 
                     b.Property<Guid>("LearnerUserId")
                         .HasColumnType("uuid");
+
+                    b.Property<string>("RubricScoresJson")
+                        .HasMaxLength(30000)
+                        .HasColumnType("character varying(30000)");
 
                     b.Property<decimal?>("ScorePoints")
                         .HasPrecision(8, 2)
@@ -663,6 +908,8 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("AssignmentId");
+
+                    b.HasIndex("TenantId", "GroupId");
 
                     b.HasIndex("TenantId", "AssignmentId", "LearnerUserId")
                         .IsUnique();
@@ -869,6 +1116,93 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                     b.ToTable("announcements", (string)null);
                 });
 
+            modelBuilder.Entity("Lms.Api.Domain.Community.ForumAttachment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ContentType")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("FileName")
+                        .IsRequired()
+                        .HasMaxLength(260)
+                        .HasColumnType("character varying(260)");
+
+                    b.Property<Guid?>("ReplyId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("SizeBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("StorageKey")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("ThreadId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("UploadedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ThreadId");
+
+                    b.HasIndex("TenantId", "ThreadId", "ReplyId");
+
+                    b.ToTable("forum_attachments", (string)null);
+                });
+
+            modelBuilder.Entity("Lms.Api.Domain.Community.ForumEdit", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("EditedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("EditedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("PreviousBody")
+                        .IsRequired()
+                        .HasMaxLength(10000)
+                        .HasColumnType("character varying(10000)");
+
+                    b.Property<string>("PreviousTitle")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<Guid?>("ReplyId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("ThreadId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ThreadId");
+
+                    b.HasIndex("TenantId", "ThreadId", "ReplyId", "EditedAtUtc");
+
+                    b.ToTable("forum_edits", (string)null);
+                });
+
             modelBuilder.Entity("Lms.Api.Domain.Community.ForumReply", b =>
                 {
                     b.Property<Guid>("Id")
@@ -884,6 +1218,9 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                         .HasColumnType("character varying(10000)");
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("EditedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<Guid>("TenantId")
@@ -919,6 +1256,9 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid");
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("EditedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<bool>("IsLocked")
@@ -1181,6 +1521,9 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<bool>("CompleteWhenVideosWatched")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("ContentHtml")
                         .HasMaxLength(200000)
                         .HasColumnType("character varying(200000)");
@@ -1249,6 +1592,49 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                     b.HasIndex("TenantId", "CourseVersionId", "DisplayOrder");
 
                     b.ToTable("course_modules", (string)null);
+                });
+
+            modelBuilder.Entity("Lms.Api.Domain.Courses.CourseRating", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("CourseId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("IsHidden")
+                        .HasColumnType("boolean");
+
+                    b.Property<Guid>("LearnerUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Review")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<int>("Stars")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CourseId");
+
+                    b.HasIndex("TenantId", "CourseId", "IsHidden");
+
+                    b.HasIndex("TenantId", "CourseId", "LearnerUserId")
+                        .IsUnique();
+
+                    b.ToTable("course_ratings", (string)null);
                 });
 
             modelBuilder.Entity("Lms.Api.Domain.Courses.CourseTag", b =>
@@ -2299,6 +2685,46 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                     b.ToTable("course_applications", (string)null);
                 });
 
+            modelBuilder.Entity("Lms.Api.Domain.Landing.LandingImage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ContentType")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("FileName")
+                        .IsRequired()
+                        .HasMaxLength(260)
+                        .HasColumnType("character varying(260)");
+
+                    b.Property<long>("SizeBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("StorageKey")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("UploadedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId");
+
+                    b.ToTable("landing_images", (string)null);
+                });
+
             modelBuilder.Entity("Lms.Api.Domain.Landing.LandingPage", b =>
                 {
                     b.Property<Guid>("Id")
@@ -3003,6 +3429,9 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<bool>("AutoRecord")
+                        .HasColumnType("boolean");
+
                     b.Property<Guid?>("CourseId")
                         .HasColumnType("uuid");
 
@@ -3497,6 +3926,65 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                     b.ToTable("session_recordings", (string)null);
                 });
 
+            modelBuilder.Entity("Lms.Api.Domain.LiveClasses.SessionTrackRecording", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("ContentAssetId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int?>("DurationSeconds")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset?>("FinishedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
+
+                    b.Property<string>("OutputKey")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<string>("ProviderRecordingId")
+                        .IsRequired()
+                        .HasMaxLength(250)
+                        .HasColumnType("character varying(250)");
+
+                    b.Property<Guid>("SessionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("SizeBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("StartedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SessionId");
+
+                    b.HasIndex("Status");
+
+                    b.HasIndex("TenantId", "SessionId", "UserId");
+
+                    b.ToTable("session_track_recordings", (string)null);
+                });
+
             modelBuilder.Entity("Lms.Api.Domain.Messaging.Conversation", b =>
                 {
                     b.Property<Guid>("Id")
@@ -3543,6 +4031,21 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<string>("AttachmentContentType")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("AttachmentKey")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<string>("AttachmentName")
+                        .HasMaxLength(260)
+                        .HasColumnType("character varying(260)");
+
+                    b.Property<long?>("AttachmentSizeBytes")
+                        .HasColumnType("bigint");
+
                     b.Property<string>("Body")
                         .IsRequired()
                         .HasMaxLength(5000)
@@ -3552,6 +4055,12 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid");
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("DeletedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("EditedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<Guid>("SenderUserId")
@@ -4134,6 +4643,11 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");
 
+                    b.Property<string>("Tags")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid");
 
@@ -4206,6 +4720,34 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                     b.ToTable("video_ai_settings", (string)null);
                 });
 
+            modelBuilder.Entity("Lms.Api.Domain.Videos.VideoChapter", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("StartSeconds")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.Property<Guid>("VideoId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("VideoId", "StartSeconds")
+                        .IsUnique();
+
+                    b.ToTable("video_chapters", (string)null);
+                });
+
             modelBuilder.Entity("Lms.Api.Domain.Videos.VideoInsight", b =>
                 {
                     b.Property<Guid>("Id")
@@ -4256,6 +4798,42 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                     b.HasIndex("VideoId", "Kind");
 
                     b.ToTable("video_insights", (string)null);
+                });
+
+            modelBuilder.Entity("Lms.Api.Domain.Videos.VideoNote", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("PositionSeconds")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Text")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("VideoId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("VideoId", "UserId", "PositionSeconds");
+
+                    b.ToTable("video_notes", (string)null);
                 });
 
             modelBuilder.Entity("Lms.Api.Domain.Videos.VideoTranscript", b =>
@@ -4345,6 +4923,75 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                     b.HasIndex("VideoId", "Index");
 
                     b.ToTable("video_transcript_segments", (string)null);
+                });
+
+            modelBuilder.Entity("Lms.Api.Domain.Videos.VideoUpload", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ChunkMap")
+                        .IsRequired()
+                        .HasMaxLength(20480)
+                        .HasColumnType("character varying(20480)");
+
+                    b.Property<int>("ChunkSize")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("ContentType")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("character varying(150)");
+
+                    b.Property<Guid>("CourseId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
+                    b.Property<int?>("DurationSeconds")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("FileName")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.Property<Guid?>("LessonId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("SizeBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(250)
+                        .HasColumnType("character varying(250)");
+
+                    b.Property<int>("TotalChunks")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UpdatedAtUtc");
+
+                    b.HasIndex("TenantId", "UserId");
+
+                    b.ToTable("video_uploads", (string)null);
                 });
 
             modelBuilder.Entity("Lms.Api.Domain.Videos.VideoWatch", b =>
@@ -4699,6 +5346,15 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("Lms.Api.Domain.Assessments.AssessmentPool", b =>
+                {
+                    b.HasOne("Lms.Api.Domain.Assessments.Assessment", null)
+                        .WithMany()
+                        .HasForeignKey("AssessmentId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("Lms.Api.Domain.Assessments.AssessmentQuestion", b =>
                 {
                     b.HasOne("Lms.Api.Domain.Assessments.Assessment", null)
@@ -4714,6 +5370,15 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("Lms.Api.Domain.Assessments.LearnerAccommodation", b =>
+                {
+                    b.HasOne("Lms.Api.Domain.Courses.Course", null)
+                        .WithMany()
+                        .HasForeignKey("CourseId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("Lms.Api.Domain.Assessments.Question", b =>
                 {
                     b.HasOne("Lms.Api.Domain.Assessments.QuestionBank", null)
@@ -4721,6 +5386,11 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                         .HasForeignKey("QuestionBankId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+
+                    b.HasOne("Lms.Api.Domain.Assessments.Rubric", null)
+                        .WithMany()
+                        .HasForeignKey("RubricId")
+                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("Lms.Api.Domain.Assessments.QuestionBank", b =>
@@ -4728,6 +5398,41 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                     b.HasOne("Lms.Api.Domain.Courses.Course", null)
                         .WithMany()
                         .HasForeignKey("CourseId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Lms.Api.Domain.Assessments.Rubric", b =>
+                {
+                    b.HasOne("Lms.Api.Domain.Courses.Course", null)
+                        .WithMany()
+                        .HasForeignKey("CourseId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Lms.Api.Domain.Assignments.Assignment", b =>
+                {
+                    b.HasOne("Lms.Api.Domain.Assessments.Rubric", null)
+                        .WithMany()
+                        .HasForeignKey("RubricId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Lms.Api.Domain.Assignments.AssignmentGroup", b =>
+                {
+                    b.HasOne("Lms.Api.Domain.Assignments.Assignment", null)
+                        .WithMany()
+                        .HasForeignKey("AssignmentId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Lms.Api.Domain.Assignments.AssignmentGroupMember", b =>
+                {
+                    b.HasOne("Lms.Api.Domain.Assignments.AssignmentGroup", null)
+                        .WithMany()
+                        .HasForeignKey("GroupId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });
@@ -4759,6 +5464,24 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                         .WithMany()
                         .HasForeignKey("TemplateId")
                         .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Lms.Api.Domain.Community.ForumAttachment", b =>
+                {
+                    b.HasOne("Lms.Api.Domain.Community.ForumThread", null)
+                        .WithMany()
+                        .HasForeignKey("ThreadId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Lms.Api.Domain.Community.ForumEdit", b =>
+                {
+                    b.HasOne("Lms.Api.Domain.Community.ForumThread", null)
+                        .WithMany()
+                        .HasForeignKey("ThreadId")
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });
 
@@ -4817,6 +5540,15 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                     b.HasOne("Lms.Api.Domain.Courses.CourseVersion", null)
                         .WithMany()
                         .HasForeignKey("CourseVersionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Lms.Api.Domain.Courses.CourseRating", b =>
+                {
+                    b.HasOne("Lms.Api.Domain.Courses.Course", null)
+                        .WithMany()
+                        .HasForeignKey("CourseId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });
@@ -5115,6 +5847,15 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("Lms.Api.Domain.LiveClasses.SessionTrackRecording", b =>
+                {
+                    b.HasOne("Lms.Api.Domain.LiveClasses.LiveClassSession", null)
+                        .WithMany()
+                        .HasForeignKey("SessionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("Lms.Api.Domain.Messaging.ConversationMessage", b =>
                 {
                     b.HasOne("Lms.Api.Domain.Messaging.Conversation", null)
@@ -5166,7 +5907,25 @@ namespace Lms.Api.Infrastructure.Persistence.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("Lms.Api.Domain.Videos.VideoChapter", b =>
+                {
+                    b.HasOne("Lms.Api.Domain.Videos.Video", null)
+                        .WithMany()
+                        .HasForeignKey("VideoId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("Lms.Api.Domain.Videos.VideoInsight", b =>
+                {
+                    b.HasOne("Lms.Api.Domain.Videos.Video", null)
+                        .WithMany()
+                        .HasForeignKey("VideoId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Lms.Api.Domain.Videos.VideoNote", b =>
                 {
                     b.HasOne("Lms.Api.Domain.Videos.Video", null)
                         .WithMany()

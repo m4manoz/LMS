@@ -42,6 +42,7 @@ public static class IdentityEndpoints
             return await next(context);
         });
         tenant.MapGet("/me", GetCurrentUser).RequireAuthorization("tenant.authenticated");
+        tenant.MapPost("/me/password", ChangePasswordAsync).RequireAuthorization("tenant.authenticated");
         tenant.MapGet("/roles", GetRoles).RequireAuthorization("tenant.role.read");
         tenant.MapPost("/roles", CreateRoleAsync).RequireAuthorization("tenant.role.manage");
         tenant.MapPut("/roles/{roleId:guid}", UpdateRoleAsync).RequireAuthorization("tenant.role.manage");
@@ -181,6 +182,42 @@ public static class IdentityEndpoints
         db.TenantMemberships.Add(new TenantMembership { Id = Guid.NewGuid(), TenantId = tenant.Id, UserId = user.Id, RoleId = role.Id, Status = MembershipStatus.Active, CreatedAtUtc = DateTimeOffset.UtcNow, UpdatedAtUtc = DateTimeOffset.UtcNow });
         await db.SaveChangesAsync(cancellationToken);
         return Results.Created($"/api/v1/platform/tenants/{tenant.Slug}/bootstrap-admin", new { tenant = new { tenant.Id, tenant.Slug }, user = new { user.Id, user.Email, user.DisplayName }, role = role.Code });
+    }
+
+    /// <summary>
+    /// A signed-in person chooses a new password. They must give the current one (a stolen session alone cannot take over the account),
+    /// and every other session in every organization is ended; this one stays signed in.
+    /// Failures are 400, never 401, because a 401 would make the app treat the session as expired.
+    /// </summary>
+    private static async Task<IResult> ChangePasswordAsync(
+        HttpContext httpContext,
+        LmsDbContext db,
+        ITenantContext tenantContext,
+        PasswordService passwordService,
+        SecurityAuditService audit,
+        ChangePasswordRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (tenantContext.TenantId is not Guid tenantId || !Guid.TryParse(httpContext.User.FindFirstValue(ClaimTypes.NameIdentifier), out var userId)) return Results.BadRequest(new { message = "A tenant is required." });
+        var user = await db.Users.SingleOrDefaultAsync(item => item.Id == userId, cancellationToken);
+        if (user is null || user.Status != UserStatus.Active) return Results.BadRequest(new { message = "The account is not available." });
+
+        if (!passwordService.Verify(request.CurrentPassword ?? string.Empty, user.PasswordHash))
+            return Results.BadRequest(new { message = "The current password is not correct." });
+        try { PasswordService.Validate(request.NewPassword ?? string.Empty); }
+        catch (ArgumentException exception) { return Results.ValidationProblem(new Dictionary<string, string[]> { ["newPassword"] = [exception.Message] }); }
+        if (request.NewPassword == request.CurrentPassword)
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["newPassword"] = ["Choose a password different from the current one."] });
+
+        var now = DateTimeOffset.UtcNow;
+        user.PasswordHash = passwordService.Hash(request.NewPassword!);
+        user.UpdatedAtUtc = now;
+        Guid.TryParse(httpContext.User.FindFirstValue("session_id"), out var currentSession);
+        var others = await db.RefreshSessions.IgnoreQueryFilters().Where(item => item.UserId == user.Id && item.RevokedAtUtc == null && item.Id != currentSession).ToListAsync(cancellationToken);
+        foreach (var session in others) session.RevokedAtUtc = now;
+        audit.Add(db, httpContext, tenantId, "user.password.changed", "user", user.Id, new { signedOutSessions = others.Count });
+        await db.SaveChangesAsync(cancellationToken);
+        return Results.NoContent();
     }
 
     private static IResult GetCurrentUser(HttpContext httpContext, ITenantContext tenantContext) => Results.Ok(new
@@ -417,6 +454,7 @@ public static class IdentityEndpoints
 }
 
 public sealed record LoginRequest(string TenantSlug, string Email, string Password);
+public sealed record ChangePasswordRequest(string? CurrentPassword, string? NewPassword);
 public sealed record RefreshRequest(string TenantSlug, string RefreshToken);
 public sealed record AuthSessionResponse(string AccessToken, DateTimeOffset ExpiresAtUtc, string RefreshToken, TenantAuthResponse Tenant, UserAuthResponse User, string Role, string[] Roles, string[] Permissions);
 public sealed record TenantAuthResponse(Guid Id, string Slug, string Name);

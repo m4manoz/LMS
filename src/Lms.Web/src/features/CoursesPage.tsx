@@ -5,6 +5,7 @@ import SidePanel from '../components/SidePanel'
 import { ErrorBanner, NoticeBanner } from '@/components/form'
 import CourseContentEditor from './CourseContentEditor'
 import CourseEnrollmentPanel from './CourseEnrollmentPanel'
+import CourseReviewsPanel from './CourseReviewsPanel'
 import CourseLiveClasses from './CourseLiveClasses'
 import CourseForm from './CourseForm'
 import CourseList from './CourseList'
@@ -228,6 +229,7 @@ export default function CoursesPage({ mode = 'catalog', onOpenClass }: { mode?: 
                 <TabsTrigger value="classes">Live classes</TabsTrigger>
                 {authoring ? <TabsTrigger value="content">Content</TabsTrigger> : null}
                 {authoring || canEnroll ? <TabsTrigger value="enrollment">Enrollment</TabsTrigger> : null}
+                {authoring ? <TabsTrigger value="reviews">Ratings</TabsTrigger> : null}
                 {authoring ? <TabsTrigger value="rules">Access rules</TabsTrigger> : null}
                 {authoring ? <TabsTrigger value="workflow">Review and publish</TabsTrigger> : null}
               </TabsList>
@@ -325,6 +327,12 @@ export default function CoursesPage({ mode = 'catalog', onOpenClass }: { mode?: 
               {authoring || canEnroll ? (
                 <TabsContent value="enrollment">
                   <CourseEnrollmentPanel key={selected.course.id} courseId={selected.course.id} published={selected.course.status === 'Published'} />
+                </TabsContent>
+              ) : null}
+
+              {authoring ? (
+                <TabsContent value="reviews">
+                  <CourseReviewsPanel key={selected.course.id} courseId={selected.course.id} />
                 </TabsContent>
               ) : null}
 

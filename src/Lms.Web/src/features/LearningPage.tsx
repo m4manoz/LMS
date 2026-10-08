@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import CourseRatingPanel from "./CourseRatingPanel";
 import CourseLiveClasses from "./CourseLiveClasses";
 import LessonBlocks from "@/components/LessonBlocks";
 import { Badge } from "@/components/ui/badge";
@@ -478,6 +479,8 @@ export default function LearningPage({
                     <Progress value={player.enrollment.progressPercent} />
                   </CardContent>
                 </Card>
+
+                <CourseRatingPanel key={player.course.id} courseId={player.course.id} />
 
                 <Card>
                   <CardHeader>

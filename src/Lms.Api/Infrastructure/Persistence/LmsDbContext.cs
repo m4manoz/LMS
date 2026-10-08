@@ -64,6 +64,9 @@ public sealed class LmsDbContext(
     public DbSet<AssessmentQuestion> AssessmentQuestions => Set<AssessmentQuestion>();
     public DbSet<AssessmentAttempt> AssessmentAttempts => Set<AssessmentAttempt>();
     public DbSet<AssessmentAnswer> AssessmentAnswers => Set<AssessmentAnswer>();
+    public DbSet<AssessmentPool> AssessmentPools => Set<AssessmentPool>();
+    public DbSet<Rubric> Rubrics => Set<Rubric>();
+    public DbSet<LearnerAccommodation> LearnerAccommodations => Set<LearnerAccommodation>();
     public DbSet<NotificationTemplate> NotificationTemplates => Set<NotificationTemplate>();
     public DbSet<NotificationPreference> NotificationPreferences => Set<NotificationPreference>();
     public DbSet<NotificationMessage> NotificationMessages => Set<NotificationMessage>();
@@ -79,14 +82,21 @@ public sealed class LmsDbContext(
     public DbSet<SessionAnnouncement> SessionAnnouncements => Set<SessionAnnouncement>();
     public DbSet<Assignment> Assignments => Set<Assignment>();
     public DbSet<AssignmentSubmission> AssignmentSubmissions => Set<AssignmentSubmission>();
+    public DbSet<AssignmentGroup> AssignmentGroups => Set<AssignmentGroup>();
+    public DbSet<AssignmentGroupMember> AssignmentGroupMembers => Set<AssignmentGroupMember>();
     public DbSet<CoursePrerequisite> CoursePrerequisites => Set<CoursePrerequisite>();
     public DbSet<ModuleAccessRule> ModuleAccessRules => Set<ModuleAccessRule>();
     public DbSet<LiveClassSettings> LiveClassSettings => Set<LiveClassSettings>();
     public DbSet<Video> Videos => Set<Video>();
     public DbSet<VideoWatch> VideoWatches => Set<VideoWatch>();
     public DbSet<VideoAiSettings> VideoAiSettings => Set<VideoAiSettings>();
+    public DbSet<VideoUpload> VideoUploads => Set<VideoUpload>();
+    public DbSet<VideoChapter> VideoChapters => Set<VideoChapter>();
+    public DbSet<VideoNote> VideoNotes => Set<VideoNote>();
     public DbSet<LandingPage> LandingPages => Set<LandingPage>();
     public DbSet<TenantDomain> TenantDomains => Set<TenantDomain>();
+    public DbSet<LandingImage> LandingImages => Set<LandingImage>();
+    public DbSet<CourseRating> CourseRatings => Set<CourseRating>();
     public DbSet<CourseApplication> CourseApplications => Set<CourseApplication>();
     public DbSet<VideoTranscript> VideoTranscripts => Set<VideoTranscript>();
     public DbSet<VideoTranscriptSegment> VideoTranscriptSegments => Set<VideoTranscriptSegment>();
@@ -104,6 +114,8 @@ public sealed class LmsDbContext(
     public DbSet<ConversationMessage> ConversationMessages => Set<ConversationMessage>();
     public DbSet<ForumThread> ForumThreads => Set<ForumThread>();
     public DbSet<ForumReply> ForumReplies => Set<ForumReply>();
+    public DbSet<ForumEdit> ForumEdits => Set<ForumEdit>();
+    public DbSet<ForumAttachment> ForumAttachments => Set<ForumAttachment>();
     public DbSet<Announcement> Announcements => Set<Announcement>();
     public DbSet<LivePoll> LivePolls => Set<LivePoll>();
     public DbSet<LivePollResponse> LivePollResponses => Set<LivePollResponse>();
@@ -111,6 +123,7 @@ public sealed class LmsDbContext(
     public DbSet<SessionJoinRequest> SessionJoinRequests => Set<SessionJoinRequest>();
     public DbSet<SessionChatMessage> SessionChatMessages => Set<SessionChatMessage>();
     public DbSet<SessionRecording> SessionRecordings => Set<SessionRecording>();
+    public DbSet<SessionTrackRecording> SessionTrackRecordings => Set<SessionTrackRecording>();
     public DbSet<SessionConsent> SessionConsents => Set<SessionConsent>();
     public DbSet<SecurityAuditEvent> SecurityAuditEvents => Set<SecurityAuditEvent>();
     public DbSet<GamificationProfile> GamificationProfiles => Set<GamificationProfile>();
@@ -170,6 +183,7 @@ public sealed class LmsDbContext(
             entity.Property(item => item.ExternalUrl).HasMaxLength(2000);
             entity.Property(item => item.ContentType).HasMaxLength(100);
             entity.Property(item => item.HlsLayout).HasMaxLength(200);
+            entity.Property(item => item.Tags).HasMaxLength(500).IsRequired();
             entity.HasOne<Course>().WithMany().HasForeignKey(item => item.CourseId).OnDelete(DeleteBehavior.Cascade);
             entity.HasQueryFilter(item => tenantContext.TenantId != null && item.TenantId == tenantContext.TenantId);
         });
@@ -180,6 +194,37 @@ public sealed class LmsDbContext(
             entity.HasIndex(item => new { item.VideoId, item.UserId }).IsUnique();
             entity.HasIndex(item => new { item.TenantId, item.UserId });
             entity.HasOne<Video>().WithMany().HasForeignKey(item => item.VideoId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasQueryFilter(item => tenantContext.TenantId != null && item.TenantId == tenantContext.TenantId);
+        });
+
+        modelBuilder.Entity<VideoChapter>(entity =>
+        {
+            entity.ToTable("video_chapters"); entity.HasKey(item => item.Id);
+            entity.HasIndex(item => new { item.VideoId, item.StartSeconds }).IsUnique();
+            entity.Property(item => item.Title).HasMaxLength(120).IsRequired();
+            entity.HasOne<Video>().WithMany().HasForeignKey(item => item.VideoId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasQueryFilter(item => tenantContext.TenantId != null && item.TenantId == tenantContext.TenantId);
+        });
+
+        modelBuilder.Entity<VideoNote>(entity =>
+        {
+            entity.ToTable("video_notes"); entity.HasKey(item => item.Id);
+            entity.HasIndex(item => new { item.VideoId, item.UserId, item.PositionSeconds });
+            entity.Property(item => item.Text).HasMaxLength(1000).IsRequired();
+            entity.HasOne<Video>().WithMany().HasForeignKey(item => item.VideoId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasQueryFilter(item => tenantContext.TenantId != null && item.TenantId == tenantContext.TenantId);
+        });
+
+        modelBuilder.Entity<VideoUpload>(entity =>
+        {
+            entity.ToTable("video_uploads"); entity.HasKey(item => item.Id);
+            entity.HasIndex(item => new { item.TenantId, item.UserId });
+            entity.HasIndex(item => item.UpdatedAtUtc);
+            entity.Property(item => item.Title).HasMaxLength(250).IsRequired();
+            entity.Property(item => item.Description).HasMaxLength(2000);
+            entity.Property(item => item.FileName).HasMaxLength(255).IsRequired();
+            entity.Property(item => item.ContentType).HasMaxLength(150).IsRequired();
+            entity.Property(item => item.ChunkMap).HasMaxLength(20480).IsRequired();
             entity.HasQueryFilter(item => tenantContext.TenantId != null && item.TenantId == tenantContext.TenantId);
         });
 
@@ -808,6 +853,7 @@ public sealed class LmsDbContext(
             entity.Property(item => item.Prompt).HasMaxLength(10000).IsRequired();
             entity.Property(item => item.OptionsJson).HasMaxLength(20000).IsRequired();
             entity.Property(item => item.CorrectAnswerJson).HasMaxLength(20000).IsRequired();
+            entity.HasOne<Rubric>().WithMany().HasForeignKey(item => item.RubricId).OnDelete(DeleteBehavior.Restrict);
             entity.HasOne<QuestionBank>().WithMany().HasForeignKey(item => item.QuestionBankId).OnDelete(DeleteBehavior.Cascade);
             entity.HasQueryFilter(item => tenantContext.TenantId != null && item.TenantId == tenantContext.TenantId);
         });
@@ -820,9 +866,43 @@ public sealed class LmsDbContext(
             entity.Property(item => item.Title).HasMaxLength(250).IsRequired();
             entity.Property(item => item.Instructions).HasMaxLength(10000);
             entity.Property(item => item.Status).HasConversion<string>().HasMaxLength(32);
+            entity.Property(item => item.CurrentVersion).HasDefaultValue(1);
+            entity.Property(item => item.ShuffleQuestions).HasDefaultValue(false);
+            entity.Property(item => item.ShuffleOptions).HasDefaultValue(false);
             entity.HasOne<Course>().WithMany().HasForeignKey(item => item.CourseId).OnDelete(DeleteBehavior.Cascade);
             entity.HasOne<CourseVersion>().WithMany().HasForeignKey(item => item.CourseVersionId).OnDelete(DeleteBehavior.Restrict);
             entity.HasOne<QuestionBank>().WithMany().HasForeignKey(item => item.QuestionBankId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasQueryFilter(item => tenantContext.TenantId != null && item.TenantId == tenantContext.TenantId);
+        });
+
+        modelBuilder.Entity<AssessmentPool>(entity =>
+        {
+            entity.ToTable("assessment_pools");
+            entity.HasKey(item => item.Id);
+            entity.HasIndex(item => new { item.TenantId, item.AssessmentId, item.Version, item.Name }).IsUnique();
+            entity.Property(item => item.Name).HasMaxLength(100).IsRequired();
+            entity.HasOne<Assessment>().WithMany().HasForeignKey(item => item.AssessmentId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasQueryFilter(item => tenantContext.TenantId != null && item.TenantId == tenantContext.TenantId);
+        });
+
+        modelBuilder.Entity<Rubric>(entity =>
+        {
+            entity.ToTable("rubrics");
+            entity.HasKey(item => item.Id);
+            entity.HasIndex(item => new { item.TenantId, item.CourseId, item.Name }).IsUnique();
+            entity.Property(item => item.Name).HasMaxLength(200).IsRequired();
+            entity.Property(item => item.CriteriaJson).HasMaxLength(30000).IsRequired();
+            entity.HasOne<Course>().WithMany().HasForeignKey(item => item.CourseId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasQueryFilter(item => tenantContext.TenantId != null && item.TenantId == tenantContext.TenantId);
+        });
+
+        modelBuilder.Entity<LearnerAccommodation>(entity =>
+        {
+            entity.ToTable("learner_accommodations");
+            entity.HasKey(item => item.Id);
+            entity.HasIndex(item => new { item.TenantId, item.CourseId, item.LearnerUserId }).IsUnique();
+            entity.Property(item => item.Note).HasMaxLength(1000);
+            entity.HasOne<Course>().WithMany().HasForeignKey(item => item.CourseId).OnDelete(DeleteBehavior.Cascade);
             entity.HasQueryFilter(item => tenantContext.TenantId != null && item.TenantId == tenantContext.TenantId);
         });
 
@@ -830,7 +910,9 @@ public sealed class LmsDbContext(
         {
             entity.ToTable("assessment_questions");
             entity.HasKey(item => new { item.AssessmentId, item.QuestionId });
-            entity.HasIndex(item => new { item.AssessmentId, item.DisplayOrder });
+            entity.HasIndex(item => new { item.AssessmentId, item.Version, item.DisplayOrder });
+            entity.Property(item => item.Version).HasDefaultValue(1);
+            entity.Property(item => item.PoolName).HasMaxLength(100);
             entity.HasOne<Assessment>().WithMany().HasForeignKey(item => item.AssessmentId).OnDelete(DeleteBehavior.Cascade);
             entity.HasOne<Question>().WithMany().HasForeignKey(item => item.QuestionId).OnDelete(DeleteBehavior.Cascade);
         });
@@ -844,6 +926,8 @@ public sealed class LmsDbContext(
             entity.Property(item => item.Status).HasConversion<string>().HasMaxLength(32);
             entity.Property(item => item.Percentage).HasPrecision(5, 2);
             entity.Property(item => item.SubmittedAfterTimeLimit).HasDefaultValue(false);
+            entity.Property(item => item.Version).HasDefaultValue(1);
+            entity.Property(item => item.PlanJson).HasMaxLength(60000);
             entity.Property(item => item.TeacherFeedback).HasMaxLength(10000);
             entity.HasOne<Assessment>().WithMany().HasForeignKey(item => item.AssessmentId).OnDelete(DeleteBehavior.Cascade);
             entity.HasOne<Course>().WithMany().HasForeignKey(item => item.CourseId).OnDelete(DeleteBehavior.Cascade);
@@ -857,6 +941,7 @@ public sealed class LmsDbContext(
             entity.HasIndex(item => new { item.TenantId, item.AttemptId, item.QuestionId }).IsUnique();
             entity.Property(item => item.AnswerJson).HasMaxLength(30000).IsRequired();
             entity.Property(item => item.Feedback).HasMaxLength(4000);
+            entity.Property(item => item.RubricScoresJson).HasMaxLength(30000);
             entity.HasOne<AssessmentAttempt>().WithMany().HasForeignKey(item => item.AttemptId).OnDelete(DeleteBehavior.Cascade);
             entity.HasOne<Question>().WithMany().HasForeignKey(item => item.QuestionId).OnDelete(DeleteBehavior.Restrict);
             entity.HasQueryFilter(item => tenantContext.TenantId != null && item.TenantId == tenantContext.TenantId);
@@ -1044,6 +1129,45 @@ public sealed class LmsDbContext(
             entity.Property(item => item.Title).HasMaxLength(250).IsRequired();
             entity.Property(item => item.Instructions).HasMaxLength(20000);
             entity.Property(item => item.Status).HasConversion<string>().HasMaxLength(32);
+            entity.HasOne<Rubric>().WithMany().HasForeignKey(item => item.RubricId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasQueryFilter(item => tenantContext.TenantId != null && item.TenantId == tenantContext.TenantId);
+        });
+
+        modelBuilder.Entity<CourseRating>(entity =>
+        {
+            entity.ToTable("course_ratings"); entity.HasKey(item => item.Id);
+            entity.HasIndex(item => new { item.TenantId, item.CourseId, item.LearnerUserId }).IsUnique();
+            entity.HasIndex(item => new { item.TenantId, item.CourseId, item.IsHidden });
+            entity.Property(item => item.Review).HasMaxLength(1000);
+            entity.HasOne<Course>().WithMany().HasForeignKey(item => item.CourseId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasQueryFilter(item => tenantContext.TenantId != null && item.TenantId == tenantContext.TenantId);
+        });
+
+        modelBuilder.Entity<LandingImage>(entity =>
+        {
+            entity.ToTable("landing_images"); entity.HasKey(item => item.Id);
+            entity.HasIndex(item => item.TenantId);
+            entity.Property(item => item.FileName).HasMaxLength(260).IsRequired();
+            entity.Property(item => item.ContentType).HasMaxLength(100).IsRequired();
+            entity.Property(item => item.StorageKey).HasMaxLength(500).IsRequired();
+            entity.HasQueryFilter(item => tenantContext.TenantId != null && item.TenantId == tenantContext.TenantId);
+        });
+
+        modelBuilder.Entity<AssignmentGroup>(entity =>
+        {
+            entity.ToTable("assignment_groups"); entity.HasKey(item => item.Id);
+            entity.HasIndex(item => new { item.TenantId, item.AssignmentId, item.Name }).IsUnique();
+            entity.Property(item => item.Name).HasMaxLength(100).IsRequired();
+            entity.HasOne<Assignment>().WithMany().HasForeignKey(item => item.AssignmentId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasQueryFilter(item => tenantContext.TenantId != null && item.TenantId == tenantContext.TenantId);
+        });
+
+        modelBuilder.Entity<AssignmentGroupMember>(entity =>
+        {
+            entity.ToTable("assignment_group_members"); entity.HasKey(item => item.Id);
+            entity.HasIndex(item => new { item.TenantId, item.AssignmentId, item.LearnerUserId }).IsUnique();
+            entity.HasIndex(item => item.GroupId);
+            entity.HasOne<AssignmentGroup>().WithMany().HasForeignKey(item => item.GroupId).OnDelete(DeleteBehavior.Cascade);
             entity.HasQueryFilter(item => tenantContext.TenantId != null && item.TenantId == tenantContext.TenantId);
         });
 
@@ -1056,6 +1180,8 @@ public sealed class LmsDbContext(
             entity.Property(item => item.FileName).HasMaxLength(260);
             entity.Property(item => item.FileContentType).HasMaxLength(150);
             entity.Property(item => item.Feedback).HasMaxLength(20000);
+            entity.Property(item => item.RubricScoresJson).HasMaxLength(30000);
+            entity.HasIndex(item => new { item.TenantId, item.GroupId });
             entity.Property(item => item.ScorePoints).HasPrecision(8, 2);
             entity.Property(item => item.FinalPoints).HasPrecision(8, 2);
             entity.Property(item => item.Status).HasConversion<string>().HasMaxLength(32);
@@ -1197,6 +1323,9 @@ public sealed class LmsDbContext(
             entity.ToTable("conversation_messages"); entity.HasKey(item => item.Id);
             entity.HasIndex(item => new { item.TenantId, item.ConversationId, item.CreatedAtUtc });
             entity.Property(item => item.Body).HasMaxLength(5000).IsRequired();
+            entity.Property(item => item.AttachmentKey).HasMaxLength(500);
+            entity.Property(item => item.AttachmentName).HasMaxLength(260);
+            entity.Property(item => item.AttachmentContentType).HasMaxLength(200);
             entity.HasOne<Conversation>().WithMany().HasForeignKey(item => item.ConversationId).OnDelete(DeleteBehavior.Cascade);
             entity.HasQueryFilter(item => tenantContext.TenantId != null && item.TenantId == tenantContext.TenantId);
         });
@@ -1215,6 +1344,27 @@ public sealed class LmsDbContext(
             entity.ToTable("forum_replies"); entity.HasKey(item => item.Id);
             entity.HasIndex(item => new { item.TenantId, item.ThreadId, item.CreatedAtUtc });
             entity.Property(item => item.Body).HasMaxLength(10000).IsRequired();
+            entity.HasOne<ForumThread>().WithMany().HasForeignKey(item => item.ThreadId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasQueryFilter(item => tenantContext.TenantId != null && item.TenantId == tenantContext.TenantId);
+        });
+
+        modelBuilder.Entity<ForumEdit>(entity =>
+        {
+            entity.ToTable("forum_edits"); entity.HasKey(item => item.Id);
+            entity.HasIndex(item => new { item.TenantId, item.ThreadId, item.ReplyId, item.EditedAtUtc });
+            entity.Property(item => item.PreviousTitle).HasMaxLength(200);
+            entity.Property(item => item.PreviousBody).HasMaxLength(10000).IsRequired();
+            entity.HasOne<ForumThread>().WithMany().HasForeignKey(item => item.ThreadId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasQueryFilter(item => tenantContext.TenantId != null && item.TenantId == tenantContext.TenantId);
+        });
+
+        modelBuilder.Entity<ForumAttachment>(entity =>
+        {
+            entity.ToTable("forum_attachments"); entity.HasKey(item => item.Id);
+            entity.HasIndex(item => new { item.TenantId, item.ThreadId, item.ReplyId });
+            entity.Property(item => item.StorageKey).HasMaxLength(500).IsRequired();
+            entity.Property(item => item.FileName).HasMaxLength(260).IsRequired();
+            entity.Property(item => item.ContentType).HasMaxLength(200).IsRequired();
             entity.HasOne<ForumThread>().WithMany().HasForeignKey(item => item.ThreadId).OnDelete(DeleteBehavior.Cascade);
             entity.HasQueryFilter(item => tenantContext.TenantId != null && item.TenantId == tenantContext.TenantId);
         });
@@ -1283,6 +1433,19 @@ public sealed class LmsDbContext(
             entity.Property(item => item.Provider).HasMaxLength(80).IsRequired();
             entity.Property(item => item.ProviderRecordingId).HasMaxLength(250).IsRequired();
             entity.Property(item => item.RecordingUrl).HasMaxLength(1000);
+            entity.Property(item => item.OutputKey).HasMaxLength(500);
+            entity.Property(item => item.Status).HasConversion<string>().HasMaxLength(32);
+            entity.Property(item => item.LastError).HasMaxLength(4000);
+            entity.HasOne<LiveClassSession>().WithMany().HasForeignKey(item => item.SessionId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasQueryFilter(item => tenantContext.TenantId != null && item.TenantId == tenantContext.TenantId);
+        });
+
+        modelBuilder.Entity<SessionTrackRecording>(entity =>
+        {
+            entity.ToTable("session_track_recordings"); entity.HasKey(item => item.Id);
+            entity.HasIndex(item => new { item.TenantId, item.SessionId, item.UserId });
+            entity.HasIndex(item => item.Status);
+            entity.Property(item => item.ProviderRecordingId).HasMaxLength(250).IsRequired();
             entity.Property(item => item.OutputKey).HasMaxLength(500);
             entity.Property(item => item.Status).HasConversion<string>().HasMaxLength(32);
             entity.Property(item => item.LastError).HasMaxLength(4000);

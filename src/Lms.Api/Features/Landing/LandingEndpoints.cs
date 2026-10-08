@@ -132,12 +132,15 @@ public static class LandingEndpoints
         var taken = (await db.Enrollments.AsNoTracking().Where(item => ids.Contains(item.CourseId) && (item.Status == EnrollmentStatus.Active || item.Status == EnrollmentStatus.Completed))
             .GroupBy(item => item.CourseId).Select(group => new { group.Key, Count = group.Count() }).ToListAsync(cancellationToken)).ToDictionary(item => item.Key, item => item.Count);
         var categoryNames = categories.ToDictionary(item => item.Id, item => item.Name);
+        var ratings = await RatingEndpoints.SummariesAsync(db, ids, cancellationToken);
 
         PublicCourse Card(Course course)
         {
             var count = taken.GetValueOrDefault(course.Id);
+            ratings.TryGetValue(course.Id, out var rating);
             return new PublicCourse(course.Id, course.Code, course.Title, Summarise(course.Description), course.CategoryId, course.CategoryId is Guid category ? categoryNames.GetValueOrDefault(category) : null,
-                teachers.GetValueOrDefault(course.OwnerUserId), course.StartDateAd, course.EndDateAd, course.Capacity is int capacity ? Math.Max(0, capacity - count) : null);
+                teachers.GetValueOrDefault(course.OwnerUserId), course.StartDateAd, course.EndDateAd, course.Capacity is int capacity ? Math.Max(0, capacity - count) : null,
+                rating?.Average, rating?.Count ?? 0);
         }
 
         var cards = courses.Select(Card).ToList();
@@ -156,6 +159,10 @@ public static class LandingEndpoints
 
         var counts = courses.Where(item => item.CategoryId != null).GroupBy(item => item.CategoryId!.Value).ToDictionary(group => group.Key, group => group.Count());
         var shownCategories = categories.Where(item => counts.ContainsKey(item.Id)).Select(item => new PublicCategory(item.Id, item.Name, counts[item.Id])).ToList();
+        // A picture that was deleted after the page was saved is simply not shown.
+        var pictures = (await db.LandingImages.AsNoTracking().Select(item => item.Id).ToListAsync(cancellationToken)).Select(item => item.ToString("D")).ToHashSet();
+        string Keep(string id) => pictures.Contains(id) ? id : string.Empty;
+        content = content with { LogoImageId = Keep(content.LogoImageId), HeroImageId = Keep(content.HeroImageId), Banners = content.Banners.Select(item => item with { ImageId = Keep(item.ImageId) }).ToList() };
         httpContext.Response.Headers.CacheControl = "no-cache";   // always ask again: a change staff just saved must show straight away
         return Results.Ok(new PublicLanding(new PublicOrganization(tenant.Slug, tenant.Name), content, cards, shownCategories, rows));
     }
@@ -172,9 +179,11 @@ public static class LandingEndpoints
             ? await db.CourseModules.AsNoTracking().Where(item => item.CourseVersionId == versionId).OrderBy(item => item.DisplayOrder).ToListAsync(cancellationToken) : [];
         var moduleIds = modules.Select(item => item.Id).ToList();
         var lessons = await db.CourseLessons.AsNoTracking().Where(item => moduleIds.Contains(item.CourseModuleId)).OrderBy(item => item.DisplayOrder).Select(item => new { item.CourseModuleId, item.Title }).ToListAsync(cancellationToken);
+        var rating = (await RatingEndpoints.SummariesAsync(db, [course.Id], cancellationToken)).GetValueOrDefault(course.Id);
         return Results.Ok(new PublicCourseDetail(course.Id, course.Code, course.Title, course.Description, category, teacher, course.StartDateAd, course.EndDateAd,
             course.Capacity is int capacity ? Math.Max(0, capacity - taken) : null,
-            modules.Select(module => new PublicModule(module.Title, lessons.Where(item => item.CourseModuleId == module.Id).Select(item => item.Title).ToList())).ToList()));
+            modules.Select(module => new PublicModule(module.Title, lessons.Where(item => item.CourseModuleId == module.Id).Select(item => item.Title).ToList())).ToList(),
+            rating, await RatingEndpoints.ReviewsAsync(db, course.Id, 20, cancellationToken)));
     }
 
     private static async Task<IResult> ApplyAsync(string slug, Guid courseId, ApplyRequest request, LmsDbContext db, ITenantContext tenantContext, CancellationToken cancellationToken)
@@ -218,6 +227,9 @@ public static class LandingEndpoints
         if (tenantContext.TenantId is not Guid tenantId) return Results.Unauthorized();
         var content = LandingContentRules.Normalize(request, out var error);
         if (content is null) return Results.BadRequest(new { message = error ?? "The page could not be saved." });
+        var wanted = LandingContentRules.ImageIds(content);
+        if (wanted.Count > 0 && await db.LandingImages.CountAsync(item => wanted.Contains(item.Id), cancellationToken) != wanted.Count)
+            return Results.BadRequest(new { message = "A picture on the page was deleted. Choose another one, or remove it from the page." });
         var page = await db.LandingPages.SingleOrDefaultAsync(cancellationToken);
         if (page is null) { page = new LandingPage { Id = Guid.NewGuid(), TenantId = tenantId }; db.LandingPages.Add(page); }
         page.ContentJson = LandingContentRules.Serialize(content);
@@ -315,12 +327,12 @@ public static class LandingEndpoints
 }
 
 public sealed record PublicOrganization(string Slug, string Name);
-public sealed record PublicCourse(Guid Id, string Code, string Title, string Summary, Guid? CategoryId, string? Category, string? Teacher, DateOnly? StartDate, DateOnly? EndDate, int? SeatsLeft);
+public sealed record PublicCourse(Guid Id, string Code, string Title, string Summary, Guid? CategoryId, string? Category, string? Teacher, DateOnly? StartDate, DateOnly? EndDate, int? SeatsLeft, double? RatingAverage = null, int RatingCount = 0);
 public sealed record PublicCategory(Guid Id, string Name, int Courses);
 public sealed record PublicRow(string Id, string Title, string? Subtitle, List<Guid> CourseIds);
 public sealed record PublicLanding(PublicOrganization Organization, LandingContent Content, List<PublicCourse> Courses, List<PublicCategory> Categories, List<PublicRow> Rows);
 public sealed record PublicModule(string Title, List<string> Lessons);
-public sealed record PublicCourseDetail(Guid Id, string Code, string Title, string? Description, string? Category, string? Teacher, DateOnly? StartDate, DateOnly? EndDate, int? SeatsLeft, List<PublicModule> Modules);
+public sealed record PublicCourseDetail(Guid Id, string Code, string Title, string? Description, string? Category, string? Teacher, DateOnly? StartDate, DateOnly? EndDate, int? SeatsLeft, List<PublicModule> Modules, RatingSummary? Rating = null, List<PublicReview>? Reviews = null);
 public sealed record ApplyRequest(string? FullName, string? Email, string? Phone = null, string? Message = null, string? Website = null);
 public sealed record ApproveRequest(string? Message = null, int? ExpiresInDays = null);
 public sealed record ApplicationResponse(Guid Id, Guid CourseId, string CourseTitle, string FullName, string Email, string? Phone, string? Message, string Status, DateTimeOffset CreatedAtUtc, DateTimeOffset? DecidedAtUtc, Guid? InvitationId);

@@ -41,6 +41,15 @@ public static class LiveKitTokens
         return $"{header}.{payload}.{Base64Url(HMACSHA256.HashData(Encoding.UTF8.GetBytes(credentials.ApiSecret), Encoding.ASCII.GetBytes($"{header}.{payload}")))}";
     }
 
+    /// <summary>A short-lived token that lets this system look at one room, switch microphones off in it and close it. It cannot join the room.</summary>
+    public static string CreateAdminToken(LiveKitCredentials credentials, string room, TimeSpan lifetime, DateTimeOffset? now = null)
+    {
+        var issued = now ?? DateTimeOffset.UtcNow;
+        var header = Base64Url(JsonSerializer.SerializeToUtf8Bytes(new { alg = "HS256", typ = "JWT" }));
+        var payload = Base64Url(JsonSerializer.SerializeToUtf8Bytes(new { iss = credentials.ApiKey, sub = "lms-room-control", nbf = issued.AddSeconds(-5).ToUnixTimeSeconds(), exp = issued.Add(lifetime).ToUnixTimeSeconds(), video = new { room, roomAdmin = true } }));
+        return $"{header}.{payload}.{Base64Url(HMACSHA256.HashData(Encoding.UTF8.GetBytes(credentials.ApiSecret), Encoding.ASCII.GetBytes($"{header}.{payload}")))}";
+    }
+
     private static string Base64Url(byte[] bytes) => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 }
 

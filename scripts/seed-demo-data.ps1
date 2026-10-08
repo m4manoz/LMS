@@ -38,6 +38,8 @@ function Invoke-Api {
 $platform = @{ 'X-Platform-Key' = $PlatformKey }
 Invoke-Api POST '/api/v1/platform/tenants' @{ name = $TenantName; slug = $TenantSlug } $platform -AllowConflict | Out-Null
 Invoke-Api POST "/api/v1/platform/tenants/$TenantSlug/bootstrap-admin" @{ email = $AdminEmail; displayName = 'Admin'; password = $AdminPassword } $platform -AllowConflict | Out-Null
+# Give the organization its own website address (http://<slug>.localhost:5173), next to the shared portal at http://localhost:5173.
+Invoke-Api PUT "/api/v1/platform/tenants/$TenantSlug/domains" @{ host = "$TenantSlug.localhost" } $platform -AllowConflict | Out-Null
 $session = Invoke-Api POST '/api/v1/auth/login' @{ tenantSlug = $TenantSlug; email = $AdminEmail; password = $AdminPassword }
 $h = @{ 'X-Tenant-Slug' = $TenantSlug; Authorization = "Bearer $($session.accessToken)" }
 Write-Host "Signed in to '$TenantSlug' as $AdminEmail"

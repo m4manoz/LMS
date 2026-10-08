@@ -164,7 +164,8 @@ describe('LandingPage', () => {
   it('opens a course with its outline and sends an application, with the hidden box empty', async () => {
     await ready()
     await userEvent.click(within(screen.getByRole('region', { name: 'Most popular' })).getByRole('button', { name: /Algebra Foundations/ }))
-    const dialog = await screen.findByRole('dialog', { name: 'Algebra Foundations' })
+    await screen.findByRole('heading', { level: 2, name: 'Algebra Foundations' })
+    const dialog = screen.getByRole('main')   // the course has a page of its own now
     expect(await within(dialog).findByText('A gentle start.')).toBeInTheDocument()
     expect(within(dialog).getByText('Numbers')).toBeInTheDocument()
     expect(within(dialog).getByText('Fractions')).toBeInTheDocument()
@@ -192,7 +193,8 @@ describe('LandingPage', () => {
     fetchMock.mockImplementation((path: string, init?: RequestInit) => path.endsWith('/applications') && init?.method === 'POST' ? json(429, { message: 'Too many attempts. Try again later.' }) : path.endsWith('/acme/landing') ? json(200, landing()) : json(200, detail))
     await ready()
     await userEvent.click(within(screen.getByRole('region', { name: 'Most popular' })).getByRole('button', { name: /Algebra Foundations/ }))
-    const dialog = await screen.findByRole('dialog', { name: 'Algebra Foundations' })
+    await screen.findByRole('heading', { level: 2, name: 'Algebra Foundations' })
+    const dialog = screen.getByRole('main')   // the course has a page of its own now
     await userEvent.type(within(dialog).getByLabelText(/Full name/), 'Nina Newcomer'); await userEvent.type(within(dialog).getByLabelText(/^Email/), 'nina@example.org')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Apply now' }))
     expect(await within(dialog).findByText('Too many attempts. Try again later.')).toBeInTheDocument()

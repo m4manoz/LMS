@@ -8,7 +8,7 @@ import { ApiError, apiRequest } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
 import { clearInviteHash, type InviteLink } from '@/lib/inviteLink'
 
-export type Preview = { organizationName: string; tenantSlug: string; courseTitle: string; email: string; invitedBy: string; message: string | null; expiresAtUtc: string; hasAccount: boolean }
+export type Preview = { organizationName: string; tenantSlug: string; courseTitle: string; email: string; invitedBy: string; message: string | null; expiresAtUtc: string; hasAccount: boolean; isMember?: boolean }
 type Registered = { email: string; courseId: string; courseTitle: string; outcome: string; message: string | null }
 
 const publicRequest = <T,>(slug: string, path: string, body: object) =>
@@ -36,11 +36,16 @@ export default function JoinWithInvitationPage({ link, onBack }: { link: InviteL
   async function join(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!preview) return
-    if (!name.trim()) { setError('Enter your name.'); return }
-    if (password.length < 8) { setError('Choose a password of at least 8 characters.'); return }
+    // Someone with an account in another organization joins with that account's password instead of choosing a new one.
+    const joinsExisting = preview.hasAccount && preview.isMember === false
+    if (joinsExisting) { if (!password) { setError('Enter the password of your existing account.'); return } }
+    else {
+      if (!name.trim()) { setError('Enter your name.'); return }
+      if (password.length < 8) { setError('Choose a password of at least 8 characters.'); return }
+    }
     setBusy(true); setError(null)
     try {
-      await publicRequest<Registered>(preview.tenantSlug, 'register', { token: token.trim(), displayName: name, password })
+      await publicRequest<Registered>(preview.tenantSlug, 'register', joinsExisting ? { token: token.trim(), password } : { token: token.trim(), displayName: name, password })
       clearInviteHash()
       await login(preview.tenantSlug, preview.email, password)
     } catch (exception) { setError(exception instanceof ApiError ? exception.message : 'Unable to create your account.') }
@@ -65,12 +70,22 @@ export default function JoinWithInvitationPage({ link, onBack }: { link: InviteL
               <Field id="join-code" label="Invitation code" required><Input id="join-code" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value)} /></Field>
               <Button type="submit" disabled={busy}>{busy ? 'Checking…' : 'Continue'}</Button>
             </FormLayout>
-          ) : preview.hasAccount ? (
+          ) : preview.hasAccount && preview.isMember !== false ? (
             <div className="flex flex-col gap-3 text-sm">
               <ErrorBanner message={error} />
               <p>There is already an account for <strong>{preview.email}</strong>. Sign in with it, then open <em>Invitations</em> to accept.</p>
               <Button onClick={leave}>Go to sign in</Button>
             </div>
+          ) : preview.hasAccount ? (
+            <FormLayout className="gap-4" onSubmit={join}>
+              <ErrorBanner message={error} />
+              {preview.message ? <p className="whitespace-pre-wrap rounded-md border border-border p-3 text-sm">{preview.message}</p> : null}
+              <p className="text-sm">You already have an account for <strong>{preview.email}</strong> with another organization. Enter its password to join {preview.organizationName} with it.</p>
+              <Field id="join-email" label="Email"><Input id="join-email" value={preview.email} readOnly /></Field>
+              <Field id="join-existing-password" label="Your existing password" required><Input id="join-existing-password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} /></Field>
+              <Button type="submit" disabled={busy}>{busy ? 'Joining…' : 'Join with my account'}</Button>
+              <small className="text-muted-foreground">Forgotten it? Reset it from the sign-in page of your other organization first.</small>
+            </FormLayout>
           ) : (
             <FormLayout className="gap-4" onSubmit={join}>
               <ErrorBanner message={error} />
@@ -81,7 +96,7 @@ export default function JoinWithInvitationPage({ link, onBack }: { link: InviteL
               <Button type="submit" disabled={busy}>{busy ? 'Creating your account…' : 'Create account and join'}</Button>
             </FormLayout>
           )}
-          {!preview?.hasAccount ? <button type="button" className="text-sm text-muted-foreground underline" onClick={leave}>Back to sign in</button> : null}
+          {!(preview?.hasAccount && preview.isMember !== false) ? <button type="button" className="text-sm text-muted-foreground underline" onClick={leave}>Back to sign in</button> : null}
         </CardContent>
       </Card>
     </div>

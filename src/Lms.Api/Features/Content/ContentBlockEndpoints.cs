@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Lms.Api.Domain.Courses;
+using Lms.Api.Domain.Videos;
 using Lms.Api.Domain.Identity;
 using Lms.Api.Domain.Learning;
 using Lms.Api.Infrastructure.CourseAccess;
@@ -145,19 +146,35 @@ public static class ContentBlockEndpoints
         return Results.Ok((await BlocksAsync(db, courseId, lessonId, cancellationToken)).First(item => item.Id == blockId));
     }
 
-    private static async Task<IResult> DeleteAsync(Guid courseId, Guid lessonId, Guid blockId, LmsDbContext db, CancellationToken cancellationToken)
+    private static async Task<IResult> DeleteAsync(Guid courseId, Guid lessonId, Guid blockId, LmsDbContext db, IContentAssetStorage storage, CancellationToken cancellationToken)
     {
         var (course, lesson) = await FindAsync(db, courseId, lessonId, true, cancellationToken);
         if (course is null || lesson is null) return Results.NotFound();
         if (!await CanEditAsync(db, course, lesson, cancellationToken)) return Conflict("Content can only be edited while the course is a draft, or in a new version that has not been submitted for review.");
         var block = await db.LessonBlocks.SingleOrDefaultAsync(item => item.Id == blockId && item.CourseLessonId == lessonId, cancellationToken);
         if (block is null) return Results.NotFound();
+        var assetId = block.ContentAssetId;
         db.LessonBlocks.Remove(block);
         // Close the gap so the order stays 1..n.
         var rest = await db.LessonBlocks.Where(item => item.CourseLessonId == lessonId && item.Id != blockId).OrderBy(item => item.DisplayOrder).ToListAsync(cancellationToken);
         for (var i = 0; i < rest.Count; i++) rest[i].DisplayOrder = i + 1;
         await db.SaveChangesAsync(cancellationToken);
+        if (assetId is Guid id) await RemoveUnusedAssetAsync(db, storage, id, cancellationToken);
         return Results.NoContent();
+    }
+
+    /// <summary>
+    /// Takes a file out of storage once nothing shows it. A published course and its draft copy share the same files, and a video in the library can use one too,
+    /// so the file stays while any block (in any version) or video still points at it.
+    /// </summary>
+    private static async Task RemoveUnusedAssetAsync(LmsDbContext db, IContentAssetStorage storage, Guid assetId, CancellationToken cancellationToken)
+    {
+        if (await db.LessonBlocks.AnyAsync(item => item.ContentAssetId == assetId, cancellationToken) || await db.Videos.AnyAsync(item => item.ContentAssetId == assetId, cancellationToken)) return;
+        var asset = await db.ContentAssets.SingleOrDefaultAsync(item => item.Id == assetId, cancellationToken);
+        if (asset is null) return;
+        db.ContentAssets.Remove(asset);
+        await db.SaveChangesAsync(cancellationToken);
+        await storage.DeleteAsync(asset.StorageKey, cancellationToken);
     }
 
     private static async Task<IResult> ReorderAsync(Guid courseId, Guid lessonId, LmsDbContext db, ReorderRequest request, CancellationToken cancellationToken)
@@ -230,11 +247,16 @@ public static class ContentBlockEndpoints
         var blocks = await db.LessonBlocks.AsNoTracking().Where(item => item.CourseLessonId == lessonId).OrderBy(item => item.DisplayOrder).ToListAsync(cancellationToken);
         var assetIds = blocks.Where(item => item.ContentAssetId != null).Select(item => item.ContentAssetId!.Value).ToList();
         var assets = await db.ContentAssets.AsNoTracking().Where(item => assetIds.Contains(item.Id)).ToDictionaryAsync(item => item.Id, cancellationToken);
+        // A video block whose file is a library video is played by the library's player (streaming, resume, captions, notes) and counts as watched there.
+        var libraryVideos = await db.Videos.AsNoTracking().Where(item => item.ContentAssetId != null && assetIds.Contains(item.ContentAssetId.Value) && item.Status == VideoStatus.Ready)
+            .Select(item => new { item.Id, AssetId = item.ContentAssetId!.Value }).ToListAsync(cancellationToken);
+        var videoByAsset = libraryVideos.GroupBy(item => item.AssetId).ToDictionary(group => group.Key, group => group.First().Id);
         return blocks.Select(block =>
         {
             var asset = block.ContentAssetId is Guid id && assets.TryGetValue(id, out var found) ? found : null;
             return new BlockResponse(block.Id, block.Type.ToString(), block.DisplayOrder, block.Title, block.Text, block.Language, block.Url, block.Caption,
-                asset is null ? null : new BlockFile(asset.OriginalFileName, asset.ContentType, asset.SizeBytes, $"/api/v1/tenant/courses/{courseId}/assets/{asset.Id}"));
+                asset is null ? null : new BlockFile(asset.OriginalFileName, asset.ContentType, asset.SizeBytes, $"/api/v1/tenant/courses/{courseId}/assets/{asset.Id}"),
+                block.Type == BlockType.Video && asset is not null && videoByAsset.TryGetValue(asset.Id, out var videoId) ? videoId : null);
         }).ToList();
     }
 
@@ -252,4 +274,4 @@ public static class ContentBlockEndpoints
 public sealed record BlockInput(string? Type, string? Title, string? Text, string? Language, string? Url, string? Caption);
 public sealed record ReorderRequest(List<Guid>? BlockIds);
 public sealed record BlockFile(string FileName, string ContentType, long SizeBytes, string DownloadPath);
-public sealed record BlockResponse(Guid Id, string Type, int DisplayOrder, string? Title, string? Text, string? Language, string? Url, string? Caption, BlockFile? File);
+public sealed record BlockResponse(Guid Id, string Type, int DisplayOrder, string? Title, string? Text, string? Language, string? Url, string? Caption, BlockFile? File, Guid? VideoId = null);

@@ -87,8 +87,9 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
 function send(path: string, options: RequestInit) {
   const session = getStoredSession()
   const headers = new Headers(options.headers)
-  // Multipart bodies need the browser to set the boundary, so only default JSON.
-  if (!(options.body instanceof FormData)) headers.set('Content-Type', 'application/json')
+  // Multipart bodies need the browser to set the boundary, and a raw piece of a file says what it is; everything else is JSON.
+  if (options.body instanceof Blob) headers.set('Content-Type', 'application/octet-stream')
+  else if (!(options.body instanceof FormData)) headers.set('Content-Type', 'application/json')
   if (session?.accessToken) headers.set('Authorization', `Bearer ${session.accessToken}`)
   if (session?.tenant.slug) headers.set('X-Tenant-Slug', session.tenant.slug)
   return fetch(path, { ...options, headers })

@@ -152,7 +152,7 @@ Exit criteria: a learner can enroll, resume a course, complete activities, and s
 
 ### Phase 4 — Assessments and grading
 
-Status: implemented baseline. The current increment includes question banks, typed questions, assessment publishing, attempt limits, learner answers, automatic objective grading, teacher review, manual grade finalization, permission boundaries, and the Phase 4 PostgreSQL migration. Remaining hardening includes rubric criteria, assessment version branching, time-limit enforcement, randomization/question pools, accommodations, and real file-upload answer handling.
+Status: implemented baseline. The current increment includes question banks, typed questions, assessment publishing, attempt limits, learner answers, automatic objective grading, teacher review, manual grade finalization, permission boundaries, and the Phase 4 PostgreSQL migration. Rubric criteria, assessment versions, randomization/question pools, accommodations and file-upload answers were added in the M3 "Assessment depth" work (see the roadmap). Remaining hardening: timed auto-submit and assessment deadlines.
 
 - Implement MCQ, multiple response, true/false, fill-in-the-blank, matching, short answer, essay, file upload, and code submission types.
 - Separate question bank, assessment version, attempt, answer, rubric, grade, feedback, and review records.

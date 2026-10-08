@@ -11,7 +11,7 @@ import { ApiError, apiRequest } from '@/lib/api'
 import { BlockView, type Block } from '@/components/LessonBlocks'
 
 type BlockType = Block['type']
-type Module = { id: string; title: string; lessons: { id: string; title: string }[] }
+type Module = { id: string; title: string; lessons: { id: string; title: string; completeWhenVideosWatched?: boolean }[] }
 type Draft = { type: BlockType; title: string; text: string; language: string; url: string; caption: string; file: File | null }
 
 export const blockTypes: { value: BlockType; label: string }[] = [
@@ -61,6 +61,8 @@ export default function CourseContentEditor({ courseId, modules, editable }: { c
   const [addProblem, setAddProblem] = useState<string | null>(null)
   const [editProblem, setEditProblem] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // What was just saved for a lesson, until the course is loaded again.
+  const [rules, setRules] = useState<Record<string, boolean>>({})
   const base = `/api/v1/tenant/courses/${courseId}/lessons/${lessonId}/blocks`
 
   useEffect(() => { if (!lessons.some((lesson) => lesson.id === lessonId)) setLessonId(lessons[0]?.id ?? '') }, [modules])
@@ -76,6 +78,12 @@ export default function CourseContentEditor({ courseId, modules, editable }: { c
     setBusy(true); setError(null)
     try { await action(); await load() } catch (exception) { setError(readError(exception, failure)) } finally { setBusy(false) }
   }
+
+  const rule = rules[lessonId] ?? lessons.find((lesson) => lesson.id === lessonId)?.completeWhenVideosWatched ?? false
+  const setRule = (value: boolean) => run(async () => {
+    await apiRequest(`/api/v1/tenant/courses/${courseId}/lessons/${lessonId}/completion-rule`, { method: 'PUT', body: JSON.stringify({ completeWhenVideosWatched: value }) })
+    setRules((current) => ({ ...current, [lessonId]: value }))
+  }, 'Unable to change how this lesson is completed.')
 
   const add = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -132,6 +140,11 @@ export default function CourseContentEditor({ courseId, modules, editable }: { c
               ))}
             </Select>
           </Field>
+          <label className="mt-3 flex items-start gap-2 text-sm">
+            <input type="checkbox" className="mt-1" checked={rule} disabled={!editable || busy} onChange={(event) => void setRule(event.target.checked)} />
+            <span><strong className="block">Complete this lesson when its videos have been watched</strong>
+              <span className="text-muted-foreground">Applies to videos from the video library. Learners finish the lesson by watching them; they can still mark it done themselves.</span></span>
+          </label>
         </CardContent>
       </Card>
 

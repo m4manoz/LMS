@@ -9,12 +9,12 @@ import { Textarea } from '@/components/ui/textarea'
 import { ApiError } from '@/lib/api'
 import { applyForCourse, getPublicCourse, validateApplication, type ApplicationForm, type PublicCourse, type PublicCourseDetail } from '@/lib/publicApi'
 import { cn } from '@/lib/utils'
-import { coverFor, seatsLabel, whenLabel } from './parts'
+import { RatingLabel, Stars, coverFor, seatsLabel, whenLabel } from './parts'
 
 const empty: ApplicationForm = { fullName: '', email: '', phone: '', message: '', website: '' }
 
-/** One course in full, with the form to apply for it. Anyone can apply; staff decide, and approved people get an invitation by email. */
-export default function CourseDialog({ organization, course, onClose, onLogin }: { organization: string; course: PublicCourse | null; onClose: () => void; onLogin: () => void }) {
+/** One course in full, with the form to apply for it. Anyone can apply; staff decide, and approved people get an invitation by email. Shown in a panel or on a page of its own. */
+export function CourseView({ organization, course, onClose, onLogin }: { organization: string; course: PublicCourse; onClose: () => void; onLogin: () => void }) {
   const [detail, setDetail] = useState<PublicCourseDetail | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [form, setForm] = useState<ApplicationForm>(empty)
@@ -48,8 +48,6 @@ export default function CourseDialog({ organization, course, onClose, onLogin }:
   const set = (field: keyof ApplicationForm) => (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setForm((current) => ({ ...current, [field]: event.target.value }))
 
   return (
-    <SidePanel open={course !== null} label={course?.title ?? 'Course'} onClose={onClose}>
-      {course ? (
         <div className="flex flex-col gap-6">
           <div className={cn('flex flex-col gap-2 rounded-xl bg-gradient-to-br p-6 text-white', coverFor(course.category ?? course.title))}>
             <span className="w-fit rounded bg-black/25 px-2 py-0.5 text-xs font-medium">{course.category ?? 'Course'}</span>
@@ -60,6 +58,7 @@ export default function CourseDialog({ organization, course, onClose, onLogin }:
           <div className="flex flex-wrap items-center gap-3 text-sm">
             <Badge variant="secondary" className="gap-1"><CalendarDays className="h-3.5 w-3.5" aria-hidden />{whenLabel(course)}</Badge>
             {seats ? <Badge variant="outline" className="gap-1"><UserRound className="h-3.5 w-3.5" aria-hidden />{seats}</Badge> : null}
+            <RatingLabel average={detail?.rating?.average ?? course.ratingAverage} count={detail?.rating?.count ?? course.ratingCount} />
           </div>
 
           <ErrorBanner message={loadError} />
@@ -80,6 +79,41 @@ export default function CourseDialog({ organization, course, onClose, onLogin }:
                   </details>
                 ))}
               </div>
+            </section>
+          ) : null}
+
+          {detail?.rating && detail.rating.count > 0 ? (
+            <section aria-label="What learners say" className="flex flex-col gap-3">
+              <h3 className="text-lg font-semibold">What learners say</h3>
+              <div className="flex flex-wrap items-center gap-6">
+                <div className="flex flex-col items-start gap-1">
+                  <strong className="text-4xl">{detail.rating.average?.toFixed(1)}</strong>
+                  <Stars value={detail.rating.average ?? 0} />
+                  <small className="text-muted-foreground">{detail.rating.count} rating{detail.rating.count === 1 ? '' : 's'}</small>
+                </div>
+                <ol className="flex min-w-48 flex-1 flex-col gap-1" aria-label="Ratings by stars">
+                  {[5, 4, 3, 2, 1].map((star) => {
+                    const total = detail.rating!.distribution[star - 1] ?? 0
+                    return (
+                      <li key={star} className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <span className="w-12">{star} star{star === 1 ? '' : 's'}</span>
+                        <span className="h-2 flex-1 overflow-hidden rounded bg-muted"><span className="block h-full bg-amber-400" style={{ width: `${Math.round((total * 100) / detail.rating!.count)}%` }} /></span>
+                        <span className="w-6 text-right">{total}</span>
+                      </li>
+                    )
+                  })}
+                </ol>
+              </div>
+              {detail.reviews && detail.reviews.length > 0 ? (
+                <ul className="flex flex-col gap-3" aria-label="Reviews">
+                  {detail.reviews.map((review, index) => (
+                    <li key={`${review.author}-${index}`} className="rounded-lg border border-border p-3 text-sm">
+                      <div className="flex items-center gap-2"><Stars value={review.stars} /><span className="sr-only">{review.stars} out of 5.</span><strong>{review.author}</strong></div>
+                      <p className="mt-1 whitespace-pre-line text-muted-foreground">{review.text}</p>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
             </section>
           ) : null}
 
@@ -105,7 +139,14 @@ export default function CourseDialog({ organization, course, onClose, onLogin }:
             </FormLayout>
           )}
         </div>
-      ) : null}
+  )
+}
+
+/** The same course in a panel that slides over the page. */
+export default function CourseDialog({ organization, course, onClose, onLogin }: { organization: string; course: PublicCourse | null; onClose: () => void; onLogin: () => void }) {
+  return (
+    <SidePanel open={course !== null} label={course?.title ?? 'Course'} onClose={onClose}>
+      {course ? <CourseView organization={organization} course={course} onClose={onClose} onLogin={onLogin} /> : null}
     </SidePanel>
   )
 }

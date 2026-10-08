@@ -126,18 +126,41 @@ public static class LearningEndpoints
         CancellationToken cancellationToken)
     {
         if (GetUserId(httpContext) is not Guid learnerUserId) return Results.Unauthorized();
+        var outcome = await RecordProgressAsync(db, notifications, gamification, learnerUserId, courseId, lessonId, request.Status, request.PositionSeconds, request.IdempotencyKey, cancellationToken);
+        return outcome.Error ?? Results.Ok(await BuildPlayerAsync(db, outcome.Course!, outcome.VersionId, outcome.Enrollment!, cancellationToken));
+    }
+
+    /// <summary>What recording progress on a lesson came to: the reason it was refused, or the learner's enrollment and the course as they now stand.</summary>
+    internal sealed record ProgressOutcome(IResult? Error, Course? Course = null, Guid VersionId = default, Enrollment? Enrollment = null);
+
+    /// <summary>
+    /// Records that a learner started, resumed or completed a lesson, and everything that follows from it (course progress, completing the course, points, the notice).
+    /// Used by the lesson page and by anything else that can finish a lesson, such as watching its videos.
+    /// </summary>
+    internal static async Task<ProgressOutcome> RecordProgressAsync(
+        LmsDbContext db,
+        NotificationService notifications,
+        GamificationService gamification,
+        Guid learnerUserId,
+        Guid courseId,
+        Guid lessonId,
+        string status,
+        int? positionSeconds,
+        string? idempotencyKey,
+        CancellationToken cancellationToken)
+    {
         var enrollment = await db.Enrollments.SingleOrDefaultAsync(item => item.CourseId == courseId && item.LearnerUserId == learnerUserId, cancellationToken);
-        if (enrollment is null || enrollment.Status is EnrollmentStatus.Withdrawn or EnrollmentStatus.Suspended) return Results.NotFound(new { message = "The learner is not enrolled in this course." });
+        if (enrollment is null || enrollment.Status is EnrollmentStatus.Withdrawn or EnrollmentStatus.Suspended) return new(Results.NotFound(new { message = "The learner is not enrolled in this course." }));
         var course = await db.Courses.SingleOrDefaultAsync(item => item.Id == courseId && item.Status == CourseStatus.Published, cancellationToken);
-        if (course is null || course.CurrentVersionId is not Guid versionId) return Results.NotFound();
+        if (course is null || course.CurrentVersionId is not Guid versionId) return new(Results.NotFound());
         var lesson = await db.CourseLessons.SingleOrDefaultAsync(item => item.Id == lessonId && db.CourseModules.Any(module => module.Id == item.CourseModuleId && module.CourseVersionId == versionId), cancellationToken);
-        if (lesson is null) return Results.NotFound(new { message = "The lesson is not part of the published course." });
+        if (lesson is null) return new(Results.NotFound(new { message = "The lesson is not part of the published course." }));
         if (await new ModuleAccessService().LockOfAsync(db, enrollment, versionId, lesson.CourseModuleId, cancellationToken) is { } closed)
-            return Results.Conflict(new { message = closed.Reason, locked = true, unlocksAtUtc = closed.UnlocksAtUtc });
-        var requestedStatus = ParseLessonProgressStatus(request.Status);
-        if (requestedStatus is null) return Results.ValidationProblem(new Dictionary<string, string[]> { ["status"] = ["Status must be InProgress or Completed."] });
-        if (!string.IsNullOrWhiteSpace(request.IdempotencyKey) && await db.LearningProgressEvents.AnyAsync(item => item.EnrollmentId == enrollment.Id && item.IdempotencyKey == request.IdempotencyKey.Trim(), cancellationToken))
-            return Results.Ok(await BuildPlayerAsync(db, course, versionId, enrollment, cancellationToken));
+            return new(Results.Conflict(new { message = closed.Reason, locked = true, unlocksAtUtc = closed.UnlocksAtUtc }));
+        var requestedStatus = ParseLessonProgressStatus(status);
+        if (requestedStatus is null) return new(Results.ValidationProblem(new Dictionary<string, string[]> { ["status"] = ["Status must be InProgress or Completed."] }));
+        if (!string.IsNullOrWhiteSpace(idempotencyKey) && await db.LearningProgressEvents.AnyAsync(item => item.EnrollmentId == enrollment.Id && item.IdempotencyKey == idempotencyKey.Trim(), cancellationToken))
+            return new(null, course, versionId, enrollment);
 
         var now = DateTimeOffset.UtcNow;
         var wasCourseCompleted = enrollment.Status == EnrollmentStatus.Completed;
@@ -150,7 +173,7 @@ public static class LearningEndpoints
         }
         if (progress.Status != LessonProgressStatus.Completed || requestedStatus == LessonProgressStatus.Completed)
             progress.Status = requestedStatus.Value;
-        progress.PositionSeconds = Math.Max(0, request.PositionSeconds ?? progress.PositionSeconds);
+        progress.PositionSeconds = Math.Max(0, positionSeconds ?? progress.PositionSeconds);
         progress.LastViewedAtUtc = now;
         if (progress.Status == LessonProgressStatus.Completed) progress.CompletedAtUtc ??= now;
         progress.UpdatedAtUtc = now;
@@ -158,7 +181,7 @@ public static class LearningEndpoints
         enrollment.LastAccessedAtUtc = now;
         enrollment.UpdatedAtUtc = now;
         var eventType = progress.Status == LessonProgressStatus.Completed ? LearningProgressEventType.LessonCompleted : progress.PositionSeconds > 0 ? LearningProgressEventType.LessonResumed : LearningProgressEventType.LessonStarted;
-        db.LearningProgressEvents.Add(new LearningProgressEvent { Id = Guid.NewGuid(), TenantId = enrollment.TenantId, EnrollmentId = enrollment.Id, CourseId = courseId, LearnerUserId = learnerUserId, LessonId = lessonId, EventType = eventType, PositionSeconds = progress.PositionSeconds, IdempotencyKey = string.IsNullOrWhiteSpace(request.IdempotencyKey) ? null : request.IdempotencyKey.Trim(), OccurredAtUtc = now });
+        db.LearningProgressEvents.Add(new LearningProgressEvent { Id = Guid.NewGuid(), TenantId = enrollment.TenantId, EnrollmentId = enrollment.Id, CourseId = courseId, LearnerUserId = learnerUserId, LessonId = lessonId, EventType = eventType, PositionSeconds = progress.PositionSeconds, IdempotencyKey = string.IsNullOrWhiteSpace(idempotencyKey) ? null : idempotencyKey.Trim(), OccurredAtUtc = now });
         var totalLessons = await db.CourseLessons.CountAsync(item => db.CourseModules.Any(module => module.Id == item.CourseModuleId && module.CourseVersionId == versionId), cancellationToken);
         var completedLessons = await db.LessonProgress.CountAsync(item => item.EnrollmentId == enrollment.Id && item.LessonId != lessonId && item.Status == LessonProgressStatus.Completed, cancellationToken);
         if (progress.Status == LessonProgressStatus.Completed) completedLessons++;
@@ -172,7 +195,7 @@ public static class LearningEndpoints
             if (!wasCourseCompleted) await notifications.QueueAsync(db, enrollment.TenantId, learnerUserId, "COURSE_COMPLETED", new Dictionary<string, string> { ["CourseTitle"] = course.Title }, cancellationToken);
         }
         await db.SaveChangesAsync(cancellationToken);
-        return Results.Ok(await BuildPlayerAsync(db, course, versionId, enrollment, cancellationToken));
+        return new(null, course, versionId, enrollment);
     }
 
     private static async Task<IResult> ListBookmarksAsync(HttpContext httpContext, LmsDbContext db, Guid courseId, CancellationToken cancellationToken)

@@ -30,6 +30,8 @@ public sealed class LmsApiFactory : WebApplicationFactory<Program>
     public HttpMessageHandler? HttpHandler { get; init; }
     /// <summary>Replaces LiveKit's recording service.</summary>
     public Lms.Api.Infrastructure.LiveClasses.ILiveKitEgressClient? Egress { get; init; }
+    /// <summary>Replaces LiveKit's room service (who is in a room, muting, closing).</summary>
+    public Lms.Api.Infrastructure.LiveClasses.ILiveKitRoomClient? Rooms { get; init; }
     /// <summary>More configuration for this host, applied after the usual test settings.</summary>
     public Dictionary<string, string?>? ExtraSettings { get; init; }
 
@@ -67,11 +69,14 @@ public sealed class LmsApiFactory : WebApplicationFactory<Program>
             builder.ConfigureTestServices(services => services.ConfigureHttpClientDefaults(client => client.ConfigurePrimaryHttpMessageHandler(() => HttpHandler)));
         if (Egress is not null)
             builder.ConfigureTestServices(services => { services.RemoveAll<Lms.Api.Infrastructure.LiveClasses.ILiveKitEgressClient>(); services.AddSingleton(Egress); });
+        if (Rooms is not null)
+            builder.ConfigureTestServices(services => { services.RemoveAll<Lms.Api.Infrastructure.LiveClasses.ILiveKitRoomClient>(); services.AddSingleton(Rooms); });
         if (Transcoder is not null)
             builder.ConfigureTestServices(services => { services.RemoveAll<Lms.Api.Infrastructure.Videos.IVideoTranscoder>(); services.AddSingleton(Transcoder); });
         builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["Videos:Processing:WorkerEnabled"] = "false",   // tests run the processing service by hand
+            ["LiveKit:Automation:WorkerEnabled"] = "false",  // and the class automation too
             ["Database:Provider"] = "InMemory",
             ["Database:ApplyMigrations"] = "false",
             // Each host gets its own in-memory database so test classes running in parallel cannot interfere with each other.

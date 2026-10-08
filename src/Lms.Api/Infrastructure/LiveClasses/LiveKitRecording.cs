@@ -28,6 +28,8 @@ public interface ILiveKitEgressClient
 {
     /// <summary>Starts recording the whole room (everyone's video and sound) to one MP4 file. Returns the recording's id.</summary>
     Task<string> StartRoomRecordingAsync(LiveKitCredentials credentials, string room, EgressDestination destination, CancellationToken cancellationToken);
+    /// <summary>Starts recording one person (their camera and voice, apart from everyone else) to its own MP4 file. Returns the recording's id.</summary>
+    Task<string> StartParticipantRecordingAsync(LiveKitCredentials credentials, string room, string identity, EgressDestination destination, CancellationToken cancellationToken);
     Task StopAsync(LiveKitCredentials credentials, string egressId, CancellationToken cancellationToken);
     /// <summary>Null when LiveKit does not know that recording.</summary>
     Task<EgressInfo?> GetAsync(LiveKitCredentials credentials, string egressId, CancellationToken cancellationToken);
@@ -38,12 +40,23 @@ public sealed class LiveKitEgressClient(IHttpClientFactory httpFactory) : ILiveK
 {
     private static readonly string[] Statuses = ["EGRESS_STARTING", "EGRESS_ACTIVE", "EGRESS_ENDING", "EGRESS_COMPLETE", "EGRESS_FAILED", "EGRESS_ABORTED", "EGRESS_LIMIT_REACHED"];
 
-    public async Task<string> StartRoomRecordingAsync(LiveKitCredentials credentials, string room, EgressDestination destination, CancellationToken cancellationToken)
+    private static Dictionary<string, object?> FileOutput(EgressDestination destination)
     {
         var output = new Dictionary<string, object?> { ["file_type"] = "MP4", ["filepath"] = destination.FilePath };
         if (destination.S3 is { } s3)
             output["s3"] = new Dictionary<string, object?> { ["access_key"] = s3.AccessKey, ["secret"] = s3.Secret, ["region"] = s3.Region, ["endpoint"] = s3.Endpoint, ["bucket"] = s3.Bucket, ["force_path_style"] = s3.ForcePathStyle };
-        var body = await CallAsync(credentials, "StartRoomCompositeEgress", new { room_name = room, file_outputs = new[] { output } }, cancellationToken);
+        return output;
+    }
+
+    public async Task<string> StartRoomRecordingAsync(LiveKitCredentials credentials, string room, EgressDestination destination, CancellationToken cancellationToken)
+    {
+        var body = await CallAsync(credentials, "StartRoomCompositeEgress", new { room_name = room, file_outputs = new[] { FileOutput(destination) } }, cancellationToken);
+        return body.TryGetProperty("egress_id", out var id) && id.GetString() is { Length: > 0 } value ? value : throw new LiveKitEgressException("LiveKit did not start the recording.");
+    }
+
+    public async Task<string> StartParticipantRecordingAsync(LiveKitCredentials credentials, string room, string identity, EgressDestination destination, CancellationToken cancellationToken)
+    {
+        var body = await CallAsync(credentials, "StartParticipantEgress", new { room_name = room, identity, screen_share = false, file_outputs = new[] { FileOutput(destination) } }, cancellationToken);
         return body.TryGetProperty("egress_id", out var id) && id.GetString() is { Length: > 0 } value ? value : throw new LiveKitEgressException("LiveKit did not start the recording.");
     }
 
@@ -80,25 +93,8 @@ public sealed class LiveKitEgressClient(IHttpClientFactory httpFactory) : ILiveK
 
     private async Task<JsonElement> CallAsync(LiveKitCredentials credentials, string method, object request, CancellationToken cancellationToken)
     {
-        var address = new Uri(credentials.Url).GetLeftPart(UriPartial.Authority).Replace("wss://", "https://", StringComparison.OrdinalIgnoreCase).Replace("ws://", "http://", StringComparison.OrdinalIgnoreCase);
-        var client = httpFactory.CreateClient();
-        client.Timeout = TimeSpan.FromSeconds(60);
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", LiveKitTokens.CreateRecordingToken(credentials, TimeSpan.FromMinutes(5)));
-        try
-        {
-            using var response = await client.PostAsJsonAsync($"{address}/twirp/livekit.Egress/{method}", request, cancellationToken);
-            var text = await response.Content.ReadAsStringAsync(cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                string? reason = null;
-                try { reason = JsonDocument.Parse(text).RootElement.GetProperty("msg").GetString(); } catch (Exception) { /* not JSON */ }
-                throw new LiveKitEgressException(string.IsNullOrWhiteSpace(reason) ? $"LiveKit answered {(int)response.StatusCode}." : $"LiveKit says: {(reason.Length > 300 ? reason[..300] : reason)}");
-            }
-            return JsonDocument.Parse(text).RootElement.Clone();
-        }
-        catch (HttpRequestException exception) { throw new LiveKitEgressException("LiveKit could not be reached.", exception); }
-        catch (TaskCanceledException exception) when (!cancellationToken.IsCancellationRequested) { throw new LiveKitEgressException("LiveKit took too long to answer.", exception); }
-        catch (JsonException exception) { throw new LiveKitEgressException("LiveKit answered in an unexpected form.", exception); }
+        try { return await LiveKitApi.CallAsync(httpFactory, credentials, "livekit.Egress", method, request, LiveKitTokens.CreateRecordingToken(credentials, TimeSpan.FromMinutes(5)), cancellationToken); }
+        catch (LiveKitApiException exception) { throw new LiveKitEgressException(exception.Message, exception.InnerException); }
     }
 }
 
@@ -111,7 +107,7 @@ public sealed record StartRecordingResult(bool Started, int StatusCode, string? 
 /// <c>LocalDirectory</c> as this server sees it) or S3 (the storage bucket from <c>Storage:S3</c>, with <c>LiveKit:Egress:S3ServiceUrl</c> if the recording service reaches it by another address).
 /// </summary>
 public sealed class LiveKitRecordings(LmsDbContext db, ITenantContext tenantContext, LiveKitCredentialStore credentialStore, ILiveKitEgressClient egress, IConfiguration configuration,
-    IManagedSecretStore secrets, IContentAssetStorage storage, IVideoTranscoder transcoder, ILogger<LiveKitRecordings> logger)
+    IManagedSecretStore secrets, IContentAssetStorage storage, IVideoTranscoder transcoder, ILiveKitRoomClient rooms, ILogger<LiveKitRecordings> logger)
 {
     public bool Enabled => configuration.GetValue("LiveKit:Egress:Enabled", false);
     private string DestinationKind => configuration["LiveKit:Egress:Destination"]?.Trim() is { Length: > 0 } kind ? kind : "Local";
@@ -153,6 +149,7 @@ public sealed class LiveKitRecordings(LmsDbContext db, ITenantContext tenantCont
         recording.RequestedAtUtc = now;
         recording.NextAttemptAtUtc = null;
         await db.SaveChangesAsync(cancellationToken);
+        await StartTracksForRoomAsync(session, cancellationToken);   // when each person is also recorded on their own, those already in the room start now
         return new(true, 202, null);
     }
 
@@ -168,19 +165,24 @@ public sealed class LiveKitRecordings(LmsDbContext db, ITenantContext tenantCont
         catch (LiveKitEgressException exception) { return new(false, 502, exception.Message); }
         recording.Status = RecordingStatus.Processing;
         await db.SaveChangesAsync(cancellationToken);
+        await StopTracksAsync(session, cancellationToken);
         return new(true, 202, null);
     }
 
     /// <summary>Called when a class is closed: a recording still running is stopped so it does not go on for an empty room.</summary>
     public async Task StopIfRecordingAsync(LiveClassSession session, CancellationToken cancellationToken)
     {
-        try { if (await db.SessionRecordings.AnyAsync(item => item.SessionId == session.Id && item.Status == RecordingStatus.Recording, cancellationToken)) await StopAsync(session, cancellationToken); }
+        try
+        {
+            if (await db.SessionRecordings.AnyAsync(item => item.SessionId == session.Id && item.Status == RecordingStatus.Recording, cancellationToken)) await StopAsync(session, cancellationToken);
+            else await StopTracksAsync(session, cancellationToken);
+        }
         catch (Exception exception) when (exception is not OperationCanceledException) { logger.LogWarning(exception, "Could not stop the recording of session {SessionId}.", session.Id); }
     }
 
-    private (EgressDestination? Value, string? Key, string? Error) BuildDestination(LiveClassSession session)
+    private (EgressDestination? Value, string? Key, string? Error) BuildDestination(LiveClassSession session, Guid? person = null)
     {
-        var file = $"{session.Id:N}-{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}.mp4";
+        var file = $"{session.Id:N}-{(person is Guid who ? who.ToString("N") + "-" : "")}{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}.mp4";
         if (DestinationKind.Equals("Local", StringComparison.OrdinalIgnoreCase))
         {
             if (string.IsNullOrWhiteSpace(configuration["LiveKit:Egress:LocalDirectory"])) return (null, null, "Recording is not fully set up: LiveKit:Egress:LocalDirectory is missing.");
@@ -242,28 +244,7 @@ public sealed class LiveKitRecordings(LmsDbContext db, ITenantContext tenantCont
             var file = info.Files.FirstOrDefault() ?? throw new InvalidOperationException("LiveKit reported no file.");
             var now = DateTimeOffset.UtcNow;
             var assetId = Guid.NewGuid();
-            string key; long size;
-            if (DestinationKind.Equals("S3", StringComparison.OrdinalIgnoreCase))
-            {
-                key = recording.OutputKey ?? throw new InvalidOperationException("The recording's location is not known.");
-                if (!await storage.ExistsAsync(key, cancellationToken)) throw new InvalidOperationException("The recording file was not found in storage.");
-                size = file.SizeBytes ?? 0;
-            }
-            else
-            {
-                var directory = configuration["LiveKit:Egress:LocalDirectory"] ?? throw new InvalidOperationException("LiveKit:Egress:LocalDirectory is missing.");
-                var path = Path.Combine(directory, Path.GetFileName(recording.OutputKey ?? file.Filename ?? string.Empty));
-                if (!File.Exists(path)) throw new InvalidOperationException("The recording file was not found where LiveKit was asked to put it.");
-                key = $"{session.TenantId:D}/{courseId:D}/{assetId:D}.mp4";
-                await using (var source = File.OpenRead(path))
-                {
-                    size = source.Length;
-                    if (size <= 0) throw new InvalidOperationException("The recording file is empty.");
-                    await storage.PutAsync(key, source, "video/mp4", cancellationToken);
-                }
-                try { File.Delete(path); } catch (IOException) { /* a leftover in the shared folder is harmless */ }
-            }
-            if (size <= 0) throw new InvalidOperationException("The recording file is empty.");
+            var (key, size) = await StoreAsync(recording.OutputKey, file, session.TenantId, courseId, assetId, cancellationToken);
 
             var asset = new ContentAsset { Id = assetId, TenantId = session.TenantId, CourseId = courseId, OriginalFileName = $"{session.Title}.mp4", StorageKey = key, ContentType = "video/mp4", SizeBytes = size, Sha256 = string.Empty, CreatedByUserId = session.HostUserId, CreatedAtUtc = now };
             var seconds = file.DurationNanoseconds is > 0 ? (int)Math.Min(24 * 3600, Math.Ceiling(file.DurationNanoseconds.Value / 1e9)) : (int?)null;
@@ -288,10 +269,140 @@ public sealed class LiveKitRecordings(LmsDbContext db, ITenantContext tenantCont
         }
     }
 
+    /// <summary>Brings a finished recording file into this system's storage (or confirms it is already in the bucket) and returns where it is and how big.</summary>
+    private async Task<(string Key, long Size)> StoreAsync(string? outputKey, EgressFile file, Guid tenantId, Guid courseId, Guid assetId, CancellationToken cancellationToken)
+    {
+        string key; long size;
+        if (DestinationKind.Equals("S3", StringComparison.OrdinalIgnoreCase))
+        {
+            key = outputKey ?? throw new InvalidOperationException("The recording's location is not known.");
+            if (!await storage.ExistsAsync(key, cancellationToken)) throw new InvalidOperationException("The recording file was not found in storage.");
+            size = file.SizeBytes ?? 0;
+        }
+        else
+        {
+            var directory = configuration["LiveKit:Egress:LocalDirectory"] ?? throw new InvalidOperationException("LiveKit:Egress:LocalDirectory is missing.");
+            var path = Path.Combine(directory, Path.GetFileName(outputKey ?? file.Filename ?? string.Empty));
+            if (!File.Exists(path)) throw new InvalidOperationException("The recording file was not found where LiveKit was asked to put it.");
+            key = $"{tenantId:D}/{courseId:D}/{assetId:D}.mp4";
+            await using (var source = File.OpenRead(path))
+            {
+                size = source.Length;
+                if (size <= 0) throw new InvalidOperationException("The recording file is empty.");
+                await storage.PutAsync(key, source, "video/mp4", cancellationToken);
+            }
+            try { File.Delete(path); } catch (IOException) { /* a leftover in the shared folder is harmless */ }
+        }
+        if (size <= 0) throw new InvalidOperationException("The recording file is empty.");
+        return (key, size);
+    }
+
     private async Task FailAsync(SessionRecording recording, string message, CancellationToken cancellationToken)
     {
         recording.Status = RecordingStatus.Failed;
         recording.LastError = message.Length > 4000 ? message[..4000] : message;
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    // ---- Each person on their own track ----
+
+    /// <summary>Setting <c>LiveKit:Egress:SeparateTracks</c>: besides the whole-class file, every person is also recorded on their own.</summary>
+    public bool SeparateTracks => Enabled && configuration.GetValue("LiveKit:Egress:SeparateTracks", false);
+
+    /// <summary>Starts recording one person on their own, when the class is being recorded and this is switched on. Never throws: the class's own recording matters more.</summary>
+    public async Task StartTrackAsync(LiveClassSession session, Guid userId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (!SeparateTracks || session.CourseId is null) return;
+            if (!await db.SessionRecordings.AnyAsync(item => item.SessionId == session.Id && item.Status == RecordingStatus.Recording, cancellationToken)) return;
+            if (await db.SessionTrackRecordings.AnyAsync(item => item.SessionId == session.Id && item.UserId == userId && (item.Status == RecordingStatus.Recording || item.Status == RecordingStatus.Processing), cancellationToken)) return;
+            if (credentialStore.Resolve(await db.LiveClassSettings.AsNoTracking().SingleOrDefaultAsync(cancellationToken)) is not { } credentials) return;
+            var destination = BuildDestination(session, userId);
+            if (destination.Value is null) return;
+            var id = await egress.StartParticipantRecordingAsync(credentials, session.ProviderMeetingId, userId.ToString("D"), destination.Value, cancellationToken);
+            db.SessionTrackRecordings.Add(new SessionTrackRecording { Id = Guid.NewGuid(), TenantId = session.TenantId, SessionId = session.Id, UserId = userId, ProviderRecordingId = id, OutputKey = destination.Key, Status = RecordingStatus.Recording, StartedAtUtc = DateTimeOffset.UtcNow });
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (Exception exception) when (exception is LiveKitEgressException or DbUpdateException) { logger.LogWarning(exception, "Could not record {UserId} on their own in session {SessionId}.", userId, session.Id); }
+    }
+
+    /// <summary>Starts a track for everyone who is in the room already (the class recording has just begun).</summary>
+    public async Task StartTracksForRoomAsync(LiveClassSession session, CancellationToken cancellationToken)
+    {
+        if (!SeparateTracks) return;
+        try
+        {
+            if (credentialStore.Resolve(await db.LiveClassSettings.AsNoTracking().SingleOrDefaultAsync(cancellationToken)) is not { } credentials) return;
+            foreach (var person in await rooms.ListParticipantsAsync(credentials, session.ProviderMeetingId, cancellationToken))
+                if (Guid.TryParse(person.Identity, out var userId)) await StartTrackAsync(session, userId, cancellationToken);
+        }
+        catch (LiveKitApiException exception) { logger.LogWarning(exception, "Could not list who is in the room of session {SessionId}.", session.Id); }
+    }
+
+    /// <summary>Stops the tracks still being recorded; the files are brought in by <see cref="SyncTrackAsync"/> once LiveKit has finished them.</summary>
+    public async Task StopTracksAsync(LiveClassSession session, CancellationToken cancellationToken)
+    {
+        var open = await db.SessionTrackRecordings.Where(item => item.SessionId == session.Id && item.Status == RecordingStatus.Recording).ToListAsync(cancellationToken);
+        if (open.Count == 0) return;
+        if (credentialStore.Resolve(await db.LiveClassSettings.AsNoTracking().SingleOrDefaultAsync(cancellationToken)) is not { } credentials) return;
+        foreach (var track in open)
+        {
+            try { await egress.StopAsync(credentials, track.ProviderRecordingId, cancellationToken); }
+            catch (LiveKitEgressException exception) { logger.LogWarning(exception, "Could not stop track {Id}.", track.ProviderRecordingId); }   // it may have ended with the person leaving
+            track.Status = RecordingStatus.Processing;
+        }
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    public async Task SyncTrackAsync(Guid trackId, CancellationToken cancellationToken)
+    {
+        var track = await db.SessionTrackRecordings.SingleOrDefaultAsync(item => item.Id == trackId && (item.Status == RecordingStatus.Recording || item.Status == RecordingStatus.Processing), cancellationToken);
+        if (track is null) return;
+        var session = await db.LiveClassSessions.AsNoTracking().SingleOrDefaultAsync(item => item.Id == track.SessionId, cancellationToken);
+        var settings = await db.LiveClassSettings.AsNoTracking().SingleOrDefaultAsync(cancellationToken);
+        if (session?.CourseId is not Guid courseId || credentialStore.Resolve(settings) is not { } credentials) { await FailTrackAsync(track, "The class or the LiveKit settings are no longer available.", cancellationToken); return; }
+        EgressInfo? info;
+        try { info = await egress.GetAsync(credentials, track.ProviderRecordingId, cancellationToken); }
+        catch (LiveKitEgressException exception) { logger.LogWarning(exception, "Could not check track {Id}.", track.ProviderRecordingId); return; }
+        if (info is null) { await FailTrackAsync(track, "LiveKit has no record of this recording.", cancellationToken); return; }
+        switch (info.Status)
+        {
+            case "EGRESS_STARTING" or "EGRESS_ACTIVE":
+                if (session.Status == LiveSessionStatus.Completed || DateTimeOffset.UtcNow > session.EndAtUtc.AddHours(1))
+                {
+                    try { await egress.StopAsync(credentials, track.ProviderRecordingId, cancellationToken); track.Status = RecordingStatus.Processing; await db.SaveChangesAsync(cancellationToken); }
+                    catch (LiveKitEgressException exception) { logger.LogWarning(exception, "Could not stop track {Id}.", track.ProviderRecordingId); }
+                }
+                break;
+            case "EGRESS_ENDING":
+                if (track.Status != RecordingStatus.Processing) { track.Status = RecordingStatus.Processing; await db.SaveChangesAsync(cancellationToken); }
+                break;
+            case "EGRESS_COMPLETE":
+                try
+                {
+                    var file = info.Files.FirstOrDefault() ?? throw new InvalidOperationException("LiveKit reported no file.");
+                    var assetId = Guid.NewGuid();
+                    var (key, size) = await StoreAsync(track.OutputKey, file, session.TenantId, courseId, assetId, cancellationToken);
+                    var name = await db.Users.AsNoTracking().Where(item => item.Id == track.UserId).Select(item => item.DisplayName).SingleOrDefaultAsync(cancellationToken) ?? "Participant";
+                    var now = DateTimeOffset.UtcNow;
+                    db.ContentAssets.Add(new ContentAsset { Id = assetId, TenantId = session.TenantId, CourseId = courseId, OriginalFileName = $"{session.Title} – {name}.mp4", StorageKey = key, ContentType = "video/mp4", SizeBytes = size, Sha256 = string.Empty, CreatedByUserId = session.HostUserId, CreatedAtUtc = now });
+                    track.ContentAssetId = assetId; track.SizeBytes = size; track.FinishedAtUtc = now; track.LastError = null; track.Status = RecordingStatus.Available;
+                    track.DurationSeconds = file.DurationNanoseconds is > 0 ? (int)Math.Min(24 * 3600, Math.Ceiling(file.DurationNanoseconds.Value / 1e9)) : null;
+                    await db.SaveChangesAsync(cancellationToken);
+                }
+                catch (Exception exception) when (exception is InvalidOperationException or IOException or UnauthorizedAccessException) { await FailTrackAsync(track, exception.Message, cancellationToken); }
+                break;
+            default:
+                await FailTrackAsync(track, string.IsNullOrWhiteSpace(info.Error) ? "LiveKit could not finish the recording." : $"LiveKit could not finish the recording: {info.Error}", cancellationToken);
+                break;
+        }
+    }
+
+    private async Task FailTrackAsync(SessionTrackRecording track, string message, CancellationToken cancellationToken)
+    {
+        track.Status = RecordingStatus.Failed;
+        track.LastError = message.Length > 4000 ? message[..4000] : message;
         await db.SaveChangesAsync(cancellationToken);
     }
 }
@@ -301,15 +412,18 @@ public sealed class LiveKitRecordingSync(IServiceScopeFactory scopes, ILogger<Li
 {
     public async Task<int> RunOnceAsync(CancellationToken cancellationToken)
     {
-        List<(Guid Id, Guid TenantId)> open;
+        List<(Guid Id, Guid TenantId, bool Track)> open;
         using (var scope = scopes.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<LmsDbContext>();
             open = (await db.SessionRecordings.IgnoreQueryFilters().AsNoTracking()
                 .Where(item => item.Provider == "livekit" && (item.Status == RecordingStatus.Recording || item.Status == RecordingStatus.Processing))
-                .OrderBy(item => item.RequestedAtUtc).Take(20).Select(item => new { item.Id, item.TenantId }).ToListAsync(cancellationToken)).Select(item => (item.Id, item.TenantId)).ToList();
+                .OrderBy(item => item.RequestedAtUtc).Take(20).Select(item => new { item.Id, item.TenantId }).ToListAsync(cancellationToken)).Select(item => (item.Id, item.TenantId, false)).ToList();
+            open.AddRange((await db.SessionTrackRecordings.IgnoreQueryFilters().AsNoTracking()
+                .Where(item => item.Status == RecordingStatus.Recording || item.Status == RecordingStatus.Processing)
+                .OrderBy(item => item.StartedAtUtc).Take(40).Select(item => new { item.Id, item.TenantId }).ToListAsync(cancellationToken)).Select(item => (item.Id, item.TenantId, true)));
         }
-        foreach (var (id, tenantId) in open)
+        foreach (var (id, tenantId, track) in open)
         {
             try
             {
@@ -318,7 +432,8 @@ public sealed class LiveKitRecordingSync(IServiceScopeFactory scopes, ILogger<Li
                 var tenant = await db.Tenants.AsNoTracking().SingleOrDefaultAsync(item => item.Id == tenantId, cancellationToken);
                 if (tenant is null) continue;
                 scope.ServiceProvider.GetRequiredService<ITenantContext>().Set(tenant.Id, tenant.Slug);
-                await scope.ServiceProvider.GetRequiredService<LiveKitRecordings>().SyncAsync(id, cancellationToken);
+                var recordings = scope.ServiceProvider.GetRequiredService<LiveKitRecordings>();
+                if (track) await recordings.SyncTrackAsync(id, cancellationToken); else await recordings.SyncAsync(id, cancellationToken);
             }
             catch (Exception exception) when (exception is not OperationCanceledException) { logger.LogWarning(exception, "Recording {Id} could not be checked.", id); }
         }

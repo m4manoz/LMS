@@ -35,7 +35,18 @@ describe('menu structure', () => {
 
   it('points each old id at a real destination', () => {
     for (const target of Object.values(menuAliases)) expect(items.some((item) => item.id === target)).toBe(true)
-    expect(menuLabel('instructors')).toBe('Users')
+    expect(menuLabel('communication-notifications')).toBe('Notifications')
+  })
+
+  it('gives staff Learners and Instructors pages of their own, and keeps them from learners and guardians', () => {
+    const learners = items.find((item) => item.id === 'learners')!
+    const instructors = items.find((item) => item.id === 'instructors')!
+    for (const item of [learners, instructors]) {
+      expect(canViewMenuItem(item, 'TEACHER', ['enrollment.manage', 'learner.read'])).toBe(true)
+      expect(canViewMenuItem(item, 'TENANT_ADMIN', ['user.read'])).toBe(true)
+      expect(canViewMenuItem(item, 'LEARNER', ['learner.read', 'course.read'])).toBe(false)
+      expect(canViewMenuItem(item, 'GUARDIAN', ['learner.read', 'guardian.read'])).toBe(false)
+    }
   })
 
   it('shows Users only to people who may list users, not to learners who can merely read their own profile', () => {

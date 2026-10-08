@@ -34,7 +34,11 @@ import JoinWithInvitationPage from "./features/JoinWithInvitationPage";
 import LandingPage from "./features/LandingPage";
 import LoginPage from "./features/LoginPage";
 import { getSite, type SiteInfo } from "./lib/publicApi";
+import ChangePasswordForm from "./features/ChangePasswordForm";
 import PasswordResetPage from "./features/PasswordResetPage";
+import PeoplePage from "./features/PeoplePage";
+import PlatformConsolePage from "./features/PlatformConsolePage";
+import { isPlatformAddress } from "./lib/platformApi";
 import OperationsPage from "./features/OperationsPage";
 import RbacPage from "./features/RbacPage";
 import ReportsCertificatesPage from "./features/ReportsCertificatesPage";
@@ -58,8 +62,21 @@ export default function App() {
   const [site, setSite] = useState<SiteInfo | null>(null);
   useEffect(() => {
     let current = true;
-    getSite(window.location.host).then((found) => current && setSite(found)).catch(() => current && setSite({ mode: "portal", organization: null }));
+    // The API may be starting up: ask a few times before settling for the shared portal, so an organization's own address does not show the portal by mistake.
+    (async () => {
+      for (let attempt = 0; attempt < 4 && current; attempt++) {
+        try { const found = await getSite(window.location.host); if (current) setSite(found); return; }
+        catch { await new Promise((resolve) => window.setTimeout(resolve, 700 * (attempt + 1))); }
+      }
+      if (current) setSite({ mode: "portal", organization: null });
+    })();
     return () => { current = false; };
+  }, []);
+  const [operator, setOperator] = useState(() => isPlatformAddress(window.location.hash));
+  useEffect(() => {
+    const changed = () => setOperator(isPlatformAddress(window.location.hash));
+    window.addEventListener("hashchange", changed);
+    return () => window.removeEventListener("hashchange", changed);
   }, []);
   const [landing, setLanding] = useState(true);
   const [organization, setOrganization] = useState<string | undefined>(undefined);
@@ -85,6 +102,8 @@ export default function App() {
   };
 
   if (!session) {
+    // The platform operator's console lives at #/platform and has its own key, not an organization sign-in.
+    if (operator) return <PlatformConsolePage onExit={() => { window.location.hash = ""; setOperator(false); }} />;
     if (!site) return <div role="status" className="flex min-h-screen items-center justify-center text-muted-foreground">Loading…</div>;
     const fixed = site.organization ?? undefined;
     if (resetting) return <PasswordResetPage link={resetLink} onBack={() => { setResetting(false); setResetLink(null); }} />;
@@ -196,7 +215,9 @@ function renderActivePage(
   if (activeMenu === "recordings") return <LiveClassesPage initialTab="recording" initialSessionId={liveLink?.sessionId} />;
   if (activeMenu === "attendance") return <LiveClassesPage initialTab="attendance" />;
   if (activeMenu === "discussions") return <LiveClassesPage initialTab="chat" />;
-  if (["users", "instructors", "learners"].includes(activeMenu)) return <RbacPage initialTab="users" />;
+  if (activeMenu === "learners") return <PeoplePage kind="learners" />;
+  if (activeMenu === "instructors") return <PeoplePage kind="instructors" />;
+  if (activeMenu === "users") return <RbacPage initialTab="users" />;
   if (activeMenu === "security") return <RbacPage initialTab="roles" />;
   if (activeMenu === "audit-logs") return <RbacPage initialTab="audit" />;
   return <ModulePlaceholder label={menuLabel(activeMenu)} />;
@@ -258,6 +279,9 @@ function SettingsPanel({
           onChange={setAcademicStart}
           hint={academicStart ? `Canonical API value: ${academicStart} AD` : "Choose a date from the calendar."}
         />
+      </CardContent>
+      <CardContent className="max-w-sm border-t border-border pt-6">
+        <ChangePasswordForm />
       </CardContent>
     </Card>
   );

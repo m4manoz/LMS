@@ -3,7 +3,8 @@ using System.Text.Json;
 namespace Lms.Api.Infrastructure.Landing;
 
 public sealed record LandingHero(string Title, string Subtitle, string PrimaryLabel, string PrimaryLink, string SearchPlaceholder);
-public sealed record LandingBanner(string Id, string Title, string Text, string ButtonLabel, string Link, string Theme);
+/// <param name="ImageId">A picture from the organization's uploaded images, shown beside the text; empty for none.</param>
+public sealed record LandingBanner(string Id, string Title, string Text, string ButtonLabel, string Link, string Theme, string ImageId = "");
 public sealed record LandingLink(string Label, string Link);
 public sealed record LandingIntents(string Title, List<LandingLink> Items);
 /// <param name="Mode">newest, popular, category (uses CategoryId) or manual (uses CourseIds).</param>
@@ -22,7 +23,8 @@ public sealed record LandingContent(
     string FeaturesTitle, List<LandingFeature> Features, List<LandingStat> Stats,
     string TestimonialsTitle, List<LandingTestimonial> Testimonials,
     string FaqTitle, List<LandingFaq> Faq,
-    string FooterAbout, List<LandingFooterGroup> FooterGroups, string Copyright);
+    string FooterAbout, List<LandingFooterGroup> FooterGroups, string Copyright,
+    string LogoImageId = "", string HeroImageId = "");
 
 public static class LandingDefaults
 {
@@ -96,6 +98,14 @@ public static class LandingContentRules
         return Uri.TryCreate(text, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps && string.IsNullOrEmpty(uri.UserInfo) && !string.IsNullOrEmpty(uri.Host);
     }
 
+    /// <summary>An image id in its usual form, or empty when it is not one. Whether the picture exists is checked when the page is saved.</summary>
+    public static string CleanImageId(string? value) => Guid.TryParse(value?.Trim(), out var id) ? id.ToString("D") : string.Empty;
+
+    /// <summary>Every picture the content points at.</summary>
+    public static IReadOnlyList<Guid> ImageIds(LandingContent content)
+        => content.Banners.Select(item => item.ImageId).Append(content.LogoImageId).Append(content.HeroImageId)
+            .Where(item => !string.IsNullOrEmpty(item)).Select(Guid.Parse).Distinct().ToList();
+
     private static string Clean(string? value, int max) { var text = (value ?? string.Empty).Trim(); return text.Length > max ? text[..max] : text; }
     private static string? CleanOrNull(string? value, int max) { var text = Clean(value, max); return text.Length == 0 ? null : text; }
 
@@ -112,7 +122,7 @@ public static class LandingContentRules
         {
             if (Clean(banner.Title, 200).Length == 0) continue;
             if (Clean(banner.ButtonLabel, 60).Length > 0 && !IsSafeLink(banner.Link)) { error = $"The link of the banner “{Clean(banner.Title, 40)}” must start with #, / or https://."; return null; }
-            banners.Add(new(Clean(banner.Id, 40) is { Length: > 0 } id ? id : Guid.NewGuid().ToString("N")[..8], Clean(banner.Title, 200), Clean(banner.Text, 400), Clean(banner.ButtonLabel, 60), Clean(banner.ButtonLabel, 60).Length > 0 ? banner.Link.Trim() : "", Themes.Contains(banner.Theme) ? banner.Theme : "blue"));
+            banners.Add(new(Clean(banner.Id, 40) is { Length: > 0 } id ? id : Guid.NewGuid().ToString("N")[..8], Clean(banner.Title, 200), Clean(banner.Text, 400), Clean(banner.ButtonLabel, 60), Clean(banner.ButtonLabel, 60).Length > 0 ? banner.Link.Trim() : "", Themes.Contains(banner.Theme) ? banner.Theme : "blue", CleanImageId(banner.ImageId)));
         }
         if (banners.Count > 6) { error = "A page can have at most 6 banners."; return null; }
 
@@ -167,7 +177,7 @@ public static class LandingContentRules
             banners, new(Clean(input.Intents?.Title, 120), intentItems), rows,
             input.ShowCategories, Clean(input.CategoriesTitle, 120), Clean(input.FeaturesTitle, 120), features, stats,
             Clean(input.TestimonialsTitle, 120), testimonials, Clean(input.FaqTitle, 120), faq,
-            Clean(input.FooterAbout, 400), groups, Clean(input.Copyright, 200));
+            Clean(input.FooterAbout, 400), groups, Clean(input.Copyright, 200), CleanImageId(input.LogoImageId), CleanImageId(input.HeroImageId));
         if (Serialize(content).Length > MaxJsonCharacters) { error = "The page is too large."; return null; }
         return content;
     }

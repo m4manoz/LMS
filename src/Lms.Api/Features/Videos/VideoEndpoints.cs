@@ -4,7 +4,9 @@ using Lms.Api.Domain.Identity;
 using Lms.Api.Domain.Learning;
 using Lms.Api.Domain.Videos;
 using Lms.Api.Infrastructure.CourseAccess;
+using Lms.Api.Infrastructure.Gamification;
 using Lms.Api.Infrastructure.LiveClasses;
+using Lms.Api.Infrastructure.Notifications;
 using Lms.Api.Infrastructure.Persistence;
 using Lms.Api.Infrastructure.Storage;
 using Lms.Api.Infrastructure.Tenancy;
@@ -23,7 +25,7 @@ public static class VideoEndpoints
 {
     private const int MaxBlocksPerLesson = 100;
     private static readonly System.Text.RegularExpressions.Regex LanguageTag = new("^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$", System.Text.RegularExpressions.RegexOptions.Compiled);
-    private const int MaxDurationSeconds = 24 * 3600;
+    internal const int MaxDurationSeconds = 24 * 3600;
     private static readonly string[] DefaultEmbedHosts = ["www.youtube.com", "www.youtube-nocookie.com", "player.vimeo.com"];
 
     public static void MapVideoEndpoints(this WebApplication app)
@@ -41,6 +43,7 @@ public static class VideoEndpoints
 
         tenant.MapGet("", ListAsync).RequireAuthorization("tenant.course.read");
         tenant.MapGet("/usage", UsageAsync).RequireAuthorization("tenant.course.manage");
+        tenant.MapGet("/tags", TagsAsync).RequireAuthorization("tenant.course.read");
         tenant.MapGet("/{videoId:guid}", GetAsync).RequireAuthorization("tenant.course.read");
         tenant.MapGet("/{videoId:guid}/link", LinkAsync).RequireAuthorization("tenant.course.read");
         tenant.MapPost("/{videoId:guid}/progress", ProgressAsync).RequireAuthorization("tenant.course.read");
@@ -61,7 +64,7 @@ public static class VideoEndpoints
     }
 
     // ---------- reading ----------
-    private static async Task<IResult> ListAsync(HttpContext httpContext, LmsDbContext db, Guid? courseId, string? type, string? status, string? search, CancellationToken cancellationToken)
+    private static async Task<IResult> ListAsync(HttpContext httpContext, LmsDbContext db, Guid? courseId, string? type, string? status, string? search, string? tag, string? sort, CancellationToken cancellationToken)
     {
         if (GetUserId(httpContext) is not Guid userId) return Results.Unauthorized();
         var query = await VisibleAsync(httpContext, db, userId, cancellationToken);
@@ -71,9 +74,18 @@ public static class VideoEndpoints
         if (!string.IsNullOrWhiteSpace(search))
         {
             var needle = search.Trim().ToLower();
-            query = query.Where(item => item.Title.ToLower().Contains(needle) || (item.Description != null && item.Description.ToLower().Contains(needle)));
+            query = query.Where(item => item.Title.ToLower().Contains(needle) || (item.Description != null && item.Description.ToLower().Contains(needle)) || item.Tags.Contains(needle));
         }
-        var videos = await query.OrderByDescending(item => item.CreatedAtUtc).Take(300).ToListAsync(cancellationToken);
+        if (!string.IsNullOrWhiteSpace(tag)) { var pattern = VideoTags.Pattern(tag.Trim().ToLowerInvariant()); query = query.Where(item => item.Tags.Contains(pattern)); }
+        query = (sort ?? string.Empty).ToLowerInvariant() switch
+        {
+            "oldest" => query.OrderBy(item => item.CreatedAtUtc),
+            "title" => query.OrderBy(item => item.Title).ThenByDescending(item => item.CreatedAtUtc),
+            "longest" => query.OrderByDescending(item => item.DurationSeconds ?? -1).ThenByDescending(item => item.CreatedAtUtc),
+            "largest" => query.OrderByDescending(item => item.SizeBytes).ThenByDescending(item => item.CreatedAtUtc),
+            _ => query.OrderByDescending(item => item.CreatedAtUtc)
+        };
+        var videos = await query.Take(300).ToListAsync(cancellationToken);
         return Results.Ok(await ToResponsesAsync(httpContext, db, videos, userId, cancellationToken));
     }
 
@@ -84,10 +96,18 @@ public static class VideoEndpoints
         return video is null ? Results.NotFound() : Results.Ok((await ToResponsesAsync(httpContext, db, [video], userId, cancellationToken))[0]);
     }
 
-    private static async Task<IResult> UsageAsync(LmsDbContext db, CancellationToken cancellationToken)
+    /// <summary>The tags in use on the videos the person can see, most used first.</summary>
+    private static async Task<IResult> TagsAsync(HttpContext httpContext, LmsDbContext db, CancellationToken cancellationToken)
+    {
+        if (GetUserId(httpContext) is not Guid userId) return Results.Unauthorized();
+        var stored = await (await VisibleAsync(httpContext, db, userId, cancellationToken)).Where(item => item.Tags != string.Empty).Select(item => item.Tags).ToListAsync(cancellationToken);
+        return Results.Ok(stored.SelectMany(VideoTags.Read).GroupBy(item => item).Select(group => new TagCount(group.Key, group.Count())).OrderByDescending(item => item.Count).ThenBy(item => item.Tag).Take(100).ToArray());
+    }
+
+    private static async Task<IResult> UsageAsync(LmsDbContext db, IConfiguration configuration, CancellationToken cancellationToken)
     {
         var rows = await db.Videos.AsNoTracking().Select(item => new { item.Type, item.Status, item.SizeBytes }).ToListAsync(cancellationToken);
-        return Results.Ok(new VideoUsageResponse(rows.Count, rows.Sum(item => item.SizeBytes),
+        return Results.Ok(new VideoUsageResponse(rows.Count, rows.Sum(item => item.SizeBytes), QuotaBytes(configuration),
             rows.GroupBy(item => item.Type).Select(group => new VideoUsageGroup(group.Key.ToString(), group.Count(), group.Sum(item => item.SizeBytes))).ToArray(),
             rows.GroupBy(item => item.Status).Select(group => new VideoUsageGroup(group.Key.ToString(), group.Count(), group.Sum(item => item.SizeBytes))).ToArray()));
     }
@@ -196,7 +216,7 @@ public static class VideoEndpoints
     }
 
     // ---------- progress and analytics ----------
-    private static async Task<IResult> ProgressAsync(HttpContext httpContext, LmsDbContext db, ITenantContext tenantContext, Guid videoId, ProgressRequest request, CancellationToken cancellationToken)
+    private static async Task<IResult> ProgressAsync(HttpContext httpContext, LmsDbContext db, ITenantContext tenantContext, NotificationService notifications, GamificationService gamification, Guid videoId, ProgressRequest request, CancellationToken cancellationToken)
     {
         if (GetUserId(httpContext) is not Guid userId || tenantContext.TenantId is not Guid tenantId) return Results.Unauthorized();
         var video = await (await VisibleAsync(httpContext, db, userId, cancellationToken)).SingleOrDefaultAsync(item => item.Id == videoId, cancellationToken);
@@ -214,14 +234,18 @@ public static class VideoEndpoints
             watch = new VideoWatch { Id = Guid.NewGuid(), TenantId = tenantId, VideoId = videoId, UserId = userId, FirstWatchedAtUtc = now };
             db.VideoWatches.Add(watch);
         }
+        var wasCompleted = watch.Completed;
         var position = Math.Clamp(request.PositionSeconds, 0, length ?? MaxDurationSeconds);
         watch.LastPositionSeconds = position;
         watch.MaxPositionSeconds = Math.Max(watch.MaxPositionSeconds, position);
         watch.WatchedSeconds += Math.Clamp(request.WatchedSecondsDelta ?? 0, 0, 120); // a report covers a short interval; never trust a huge one
         if (request.Started == true) watch.Plays++;
         if (request.Completed == true || (length is > 0 && watch.MaxPositionSeconds >= length * 0.9)) watch.Completed = true;
+        var justCompleted = watch.Completed && !wasCompleted;
         watch.UpdatedAtUtc = now;
         await db.SaveChangesAsync(cancellationToken);
+        // Finishing the last video of a lesson that completes by watching completes the lesson.
+        if (justCompleted && video.Type != VideoType.External) await VideoLessonCompletion.ApplyAsync(db, notifications, gamification, tracked, userId, cancellationToken);
         return Results.Ok(ToProgress(watch, length));
     }
 
@@ -241,7 +265,7 @@ public static class VideoEndpoints
     }
 
     // ---------- writing ----------
-    private static async Task<IResult> UploadAsync(HttpRequest request, LmsDbContext db, ITenantContext tenantContext, IContentAssetStorage storage, IVideoTranscoder transcoder, CancellationToken cancellationToken)
+    private static async Task<IResult> UploadAsync(HttpRequest request, LmsDbContext db, ITenantContext tenantContext, IContentAssetStorage storage, IVideoTranscoder transcoder, IConfiguration configuration, CancellationToken cancellationToken)
     {
         var httpContext = request.HttpContext;
         if (tenantContext.TenantId is not Guid tenantId || GetUserId(httpContext) is not Guid userId) return Results.Unauthorized();
@@ -249,6 +273,7 @@ public static class VideoEndpoints
         var form = await request.ReadFormAsync(cancellationToken);
         var file = form.Files.FirstOrDefault();
         if (file is null || file.Length == 0) return Problem("Choose a video file.");
+        if (await QuotaProblemAsync(db, configuration, file.Length, cancellationToken) is { } full) return Results.Json(new { message = full }, statusCode: StatusCodes.Status413PayloadTooLarge);
         if (!Guid.TryParse(form["courseId"], out var courseId)) return Problem("Choose the course this video belongs to.");
         var title = form["title"].ToString().Trim();
         var description = form["description"].ToString().Trim();
@@ -307,6 +332,12 @@ public static class VideoEndpoints
         var title = request.Title?.Trim() ?? string.Empty;
         if (title.Length is 0 or > 250) return Problem("Give the video a title of 250 characters or fewer.");
         if (request.Description is { Length: > 2000 }) return Problem("The description must be 2000 characters or fewer.");
+        if (request.Tags is not null)
+        {
+            var cleaned = VideoTags.Clean(request.Tags);
+            if (cleaned.Error is not null) return Problem(cleaned.Error);
+            video.Tags = VideoTags.Store(cleaned.Tags);
+        }
         video.Title = title;
         video.Description = string.IsNullOrWhiteSpace(request.Description) ? null : request.Description.Trim();
         if (request.DurationSeconds is > 0 and <= MaxDurationSeconds) video.DurationSeconds = request.DurationSeconds;
@@ -385,6 +416,8 @@ public static class VideoEndpoints
         db.VideoTranscriptSegments.RemoveRange(await db.VideoTranscriptSegments.Where(item => item.VideoId == videoId).ToListAsync(cancellationToken));
         db.VideoTranscripts.RemoveRange(await db.VideoTranscripts.Where(item => item.VideoId == videoId).ToListAsync(cancellationToken));
         db.VideoInsights.RemoveRange(await db.VideoInsights.Where(item => item.VideoId == videoId).ToListAsync(cancellationToken));
+        db.VideoChapters.RemoveRange(await db.VideoChapters.Where(item => item.VideoId == videoId).ToListAsync(cancellationToken));
+        db.VideoNotes.RemoveRange(await db.VideoNotes.Where(item => item.VideoId == videoId).ToListAsync(cancellationToken));
         db.Videos.Remove(video); // watch history goes with it
         await db.SaveChangesAsync(cancellationToken);
         if (keyToDelete is not null) await storage.DeleteAsync(keyToDelete, cancellationToken);
@@ -404,7 +437,7 @@ public static class VideoEndpoints
         return db.Videos.AsNoTracking().Where(item => published.Contains(item.CourseId) && item.Status == VideoStatus.Ready);
     }
 
-    private static async Task<(string? Error, Guid? LessonId)> CheckFieldsAsync(LmsDbContext db, Guid courseId, string? lessonText, string title, string description, CancellationToken cancellationToken)
+    internal static async Task<(string? Error, Guid? LessonId)> CheckFieldsAsync(LmsDbContext db, Guid courseId, string? lessonText, string title, string description, CancellationToken cancellationToken)
     {
         if (title.Length is 0 or > 250) return ("Give the video a title of 250 characters or fewer.", null);
         if (description.Length > 2000) return ("The description must be 2000 characters or fewer.", null);
@@ -417,13 +450,24 @@ public static class VideoEndpoints
         return inCourse ? (null, lessonId) : ("That lesson does not belong to the course.", null);
     }
 
+    /// <summary>What an organization may keep in its video library (Videos:QuotaMegabytes), or null for no limit.</summary>
+    internal static long? QuotaBytes(IConfiguration configuration) => configuration.GetValue("Videos:QuotaMegabytes", 0L) is > 0 and var megabytes ? megabytes * 1024 * 1024 : null;
+
+    /// <summary>Null when a video of the given size fits in the library's quota, otherwise what to tell the person.</summary>
+    internal static async Task<string?> QuotaProblemAsync(LmsDbContext db, IConfiguration configuration, long addedBytes, CancellationToken cancellationToken)
+    {
+        if (QuotaBytes(configuration) is not long quota) return null;
+        var used = await db.Videos.AsNoTracking().SumAsync(item => item.SizeBytes, cancellationToken);
+        return used + addedBytes > quota ? $"The video library is full: it holds {used / (1024 * 1024)} MB of its {quota / (1024 * 1024)} MB. Delete videos you no longer need, or ask your administrator for more room." : null;
+    }
+
     private static bool IsEmbeddable(string? url, IConfiguration configuration)
     {
         var hosts = configuration.GetSection("Content:EmbedHosts").Get<string[]>() is { Length: > 0 } configured ? configured : DefaultEmbedHosts;
         return BlockFileRules.IsEmbedAllowed(url, hosts);
     }
 
-    private static async Task<List<VideoResponse>> ToResponsesAsync(HttpContext httpContext, LmsDbContext db, List<Video> videos, Guid userId, CancellationToken cancellationToken)
+    internal static async Task<List<VideoResponse>> ToResponsesAsync(HttpContext httpContext, LmsDbContext db, List<Video> videos, Guid userId, CancellationToken cancellationToken)
     {
         var courseIds = videos.Select(item => item.CourseId).Distinct().ToList();
         var courses = await db.Courses.AsNoTracking().Where(item => courseIds.Contains(item.Id)).ToDictionaryAsync(item => item.Id, item => item.Title, cancellationToken);
@@ -436,7 +480,7 @@ public static class VideoEndpoints
         string? PosterUrl(Video item) => item.HasPoster ? $"/api/v1/tenant/videos/{item.Id:D}/poster?token={Uri.EscapeDataString(tokens.Create(tenantId, item.Id, userId).Token)}" : null;
         return videos.Select(item => new VideoResponse(item.Id, item.CourseId, courses.GetValueOrDefault(item.CourseId, "Course"), item.LessonId, item.Title, item.Description, item.Type.ToString(), item.Status.ToString(), item.StatusMessage,
             item.ContentType, item.SizeBytes, item.DurationSeconds, item.ExternalUrl, creators.GetValueOrDefault(item.CreatedByUserId, "Unknown"), item.CreatedAtUtc,
-            mine.TryGetValue(item.Id, out var watch) ? ToProgress(watch, item.DurationSeconds) : null, item.HlsSegmentCount is > 0, PosterUrl(item))).ToList();
+            mine.TryGetValue(item.Id, out var watch) ? ToProgress(watch, item.DurationSeconds) : null, item.HlsSegmentCount is > 0, PosterUrl(item), VideoTags.Read(item.Tags))).ToList();
     }
 
     private static VideoProgress ToProgress(VideoWatch watch, int? length)
@@ -448,15 +492,16 @@ public static class VideoEndpoints
 }
 
 public sealed record ExternalVideoRequest(Guid CourseId, string? Title, string? Description, string? Url, Guid? LessonId = null, int? DurationSeconds = null);
-public sealed record UpdateVideoRequest(string? Title, string? Description, int? DurationSeconds = null);
+public sealed record UpdateVideoRequest(string? Title, string? Description, int? DurationSeconds = null, string[]? Tags = null);
+public sealed record TagCount(string Tag, int Count);
 public sealed record AttachRequest(Guid LessonId);
 public sealed record ProgressRequest(int PositionSeconds, int? DurationSeconds = null, int? WatchedSecondsDelta = null, bool? Started = null, bool? Completed = null);
 public sealed record VideoProgress(int LastPositionSeconds, int? Percent, bool Completed);
 public sealed record PlaybackLink(string Kind, string Url, DateTimeOffset? ExpiresAtUtc, bool Embeddable, string? FallbackUrl = null, string? CaptionsUrl = null, string? CaptionsLanguage = null);
 public sealed record AttachedBlock(Guid BlockId, string BlockType, Guid LessonId);
 public sealed record VideoResponse(Guid Id, Guid CourseId, string CourseTitle, Guid? LessonId, string Title, string? Description, string Type, string Status, string? StatusMessage,
-    string? ContentType, long SizeBytes, int? DurationSeconds, string? ExternalUrl, string CreatedBy, DateTimeOffset CreatedAtUtc, VideoProgress? MyProgress, bool HasStreaming = false, string? PosterUrl = null);
+    string? ContentType, long SizeBytes, int? DurationSeconds, string? ExternalUrl, string CreatedBy, DateTimeOffset CreatedAtUtc, VideoProgress? MyProgress, bool HasStreaming = false, string? PosterUrl = null, string[]? Tags = null);
 public sealed record VideoUsageGroup(string Name, int Count, long SizeBytes);
-public sealed record VideoUsageResponse(int Count, long TotalBytes, VideoUsageGroup[] ByType, VideoUsageGroup[] ByStatus);
+public sealed record VideoUsageResponse(int Count, long TotalBytes, long? QuotaBytes, VideoUsageGroup[] ByType, VideoUsageGroup[] ByStatus);
 public sealed record FunnelStep(int Percent, int Viewers);
 public sealed record VideoAnalyticsResponse(Guid VideoId, string Title, int? DurationSeconds, int EligibleLearners, int Viewers, int Completed, int Plays, int WatchedSeconds, int? AverageWatchedPercent, FunnelStep[] Funnel);

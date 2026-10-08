@@ -29,6 +29,8 @@ public sealed class Video
     public Guid? LessonId { get; set; }
     public string Title { get; set; } = string.Empty;
     public string? Description { get; set; }
+    /// <summary>Words staff use to group videos, kept as "|lowercase|words|" so a tag can be looked for exactly. Empty when there are none.</summary>
+    public string Tags { get; set; } = string.Empty;
     public VideoType Type { get; set; }
     public VideoStatus Status { get; set; }
     public string? StatusMessage { get; set; }
@@ -47,6 +49,55 @@ public sealed class Video
     public bool HasPoster { get; set; }
     public int ProcessingAttempts { get; set; }
     public Guid CreatedByUserId { get; set; }
+    public DateTimeOffset CreatedAtUtc { get; set; }
+    public DateTimeOffset UpdatedAtUtc { get; set; }
+}
+
+/// <summary>
+/// A video being uploaded in pieces, so a dropped connection or a closed tab loses only the piece in flight and the upload can carry on.
+/// The pieces wait in storage until the last one arrives, then they are joined into the video's file.
+/// </summary>
+public sealed class VideoUpload
+{
+    public Guid Id { get; set; }
+    public Guid TenantId { get; set; }
+    public Guid UserId { get; set; }
+    public Guid CourseId { get; set; }
+    public Guid? LessonId { get; set; }
+    public string Title { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public string FileName { get; set; } = string.Empty;
+    public string ContentType { get; set; } = string.Empty;
+    public long SizeBytes { get; set; }
+    public int? DurationSeconds { get; set; }
+    public int ChunkSize { get; set; }
+    public int TotalChunks { get; set; }
+    /// <summary>One character per piece: '1' once it has arrived, '0' while it has not.</summary>
+    public string ChunkMap { get; set; } = string.Empty;
+    public DateTimeOffset CreatedAtUtc { get; set; }
+    public DateTimeOffset UpdatedAtUtc { get; set; }
+}
+
+/// <summary>A named section of a video that staff set, so learners can see its outline and jump to a part.</summary>
+public sealed class VideoChapter
+{
+    public Guid Id { get; set; }
+    public Guid TenantId { get; set; }
+    public Guid VideoId { get; set; }
+    public int StartSeconds { get; set; }
+    public string Title { get; set; } = string.Empty;
+}
+
+/// <summary>A learner's own note or bookmark at a moment in a video. Only its owner can see it.</summary>
+public sealed class VideoNote
+{
+    public Guid Id { get; set; }
+    public Guid TenantId { get; set; }
+    public Guid VideoId { get; set; }
+    public Guid UserId { get; set; }
+    public int PositionSeconds { get; set; }
+    /// <summary>What the learner wrote; empty for a plain bookmark.</summary>
+    public string Text { get; set; } = string.Empty;
     public DateTimeOffset CreatedAtUtc { get; set; }
     public DateTimeOffset UpdatedAtUtc { get; set; }
 }

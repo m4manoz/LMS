@@ -68,7 +68,7 @@ public static class TaskEndpoints
                 assignment.DueAtUtc, status, "assignments", null));
         }
 
-        // ---- the user's own assessments (no deadlines, so they are undated to-dos) ----
+        // ---- the user's own assessments (those with a deadline appear on the calendar on that day; the rest are undated to-dos) ----
         var assessments = await db.Assessments.AsNoTracking()
             .Where(item => enrolledCourseIds.Contains(item.CourseId) && item.Status == AssessmentStatus.Published).ToListAsync(cancellationToken);
         var assessmentIds = assessments.Select(item => item.Id).ToList();
@@ -78,8 +78,13 @@ public static class TaskEndpoints
             .ToDictionaryAsync(item => item.Key, cancellationToken);
         foreach (var assessment in assessments)
         {
-            var status = attempts.TryGetValue(assessment.Id, out var attempt) ? (attempt.Done ? "Done" : "InProgress") : "Todo";
-            items.Add(new TaskItem($"assessment:{assessment.Id}", "assessment", assessment.Title, courseTitles.GetValueOrDefault(assessment.CourseId), null, null, status, "quizzes", null));
+            var started = attempts.TryGetValue(assessment.Id, out var attempt);
+            var status = started ? (attempt!.Done ? "Done" : "InProgress") : "Todo";
+            var due = assessment.DueAtUtc;
+            // Missed: the deadline passed and nothing was ever started. It stays visible (in red) for the usual look-back, then drops off.
+            if (!started && due is DateTimeOffset closed && closed <= now) { if (closed < windowStart) continue; status = "Overdue"; }
+            else if (due is DateTimeOffset dueAt && !InWindow(dueAt, windowStart, windowEnd)) continue;   // dated work outside the range is not shown
+            items.Add(new TaskItem($"assessment:{assessment.Id}", "assessment", assessment.Title, courseTitles.GetValueOrDefault(assessment.CourseId), null, due, status, "quizzes", null));
         }
 
         // ---- upcoming live classes ----

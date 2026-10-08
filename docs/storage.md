@@ -84,9 +84,58 @@ set LMS_TEST_S3_SECRET_KEY=lmsadmin-secret
 dotnet test tests/Lms.Api.Tests
 ```
 
+## A bucket for one organization
+
+By default all organizations share `Storage:S3:Bucket`, kept apart by the organization id at the start of every key.
+An organization that needs its files in a bucket of its own (for its own retention rules, encryption key or cost
+tracking) is given one by id:
+
+```
+Storage__S3__TenantBuckets__11111111-1111-1111-1111-111111111111=acme-lms-files
+```
+
+Every other organization stays in the shared bucket. Things to know:
+
+- The bucket must already exist and be reachable with the same endpoint and credentials; the key prefix applies in every bucket.
+- The choice is made from the key, so files already in the shared bucket are not moved. Copy an organization's folder
+  (`lms/<organization id>/`) into its new bucket before adding the setting, or only new uploads will go there.
+- `/health/ready` checks every bucket, so one organization's unreachable bucket makes the API report not ready.
+- The platform console shows, for each organization, which bucket it uses.
+- Separate credentials per bucket are not supported; use one set of credentials with access to all of them.
+
+## Virus scanning
+
+Uploads can be checked by a [ClamAV](https://www.clamav.net/) daemon (`clamd`) before they are stored. Every kind of upload
+goes through the same check: course files, assignment submissions, messages, forum attachments, assessment answers and videos.
+
+| Setting | Meaning | Default |
+|---|---|---|
+| `Storage:VirusScan:Provider` | `None` or `ClamAv` | `None` |
+| `Storage:VirusScan:Host` / `Port` | Where clamd listens | `localhost` / `3310` |
+| `Storage:VirusScan:TimeoutSeconds` | How long to wait for an answer (1 to 600) | `30` |
+| `Storage:VirusScan:OnError` | `Reject` or `Allow` when the scanner cannot answer | `Reject` |
+
+A file the scanner calls harmful is refused with a plain message and nothing is stored or recorded. With `OnError=Reject`
+(the default) a scanner that is down or too slow also refuses uploads: safe, but uploads stop while it is down, so watch it.
+`Allow` accepts them and logs an error instead. Mistyped settings stop the API from starting.
+
+The file is streamed to clamd (`INSTREAM`), never written to its disk. clamd rejects streams over its `StreamMaxLength`
+(25 MB by default), so raise it to your largest upload (`Videos:MaxMegabytes`), or those files count as "could not be scanned".
+Files the system makes itself (video pieces from FFmpeg) are not scanned; the original upload they come from is.
+Scanning looks at what is uploaded from now on; it does not scan files already stored.
+
+To check it works, upload the standard [EICAR test file](https://www.eicar.org/download-anti-malware-testfile/) somewhere that accepts files.
+
+## Deleting files
+
+A file is removed from storage when nothing uses it any more: when a lesson block that shows it is deleted (unless another
+block, in this or another course version, or a video still uses it), when a learner replaces their assignment file (unless a
+teammate's copy still points at it), when a message or forum post is deleted, and when a video is deleted. Removing a whole
+course or organization does not yet remove its files.
+
 ## Not covered yet
 
-- Separate buckets or credentials per organization.
-- Deleting objects when courses or submissions are removed (files are kept).
-- Virus scanning of uploads.
+- Separate credentials per organization, and moving an organization's existing files into a new bucket automatically.
+- Removing the files of a deleted course or organization.
+- Scanning files that were stored before scanning was turned on.
 - Resumable or multipart browser-to-storage uploads (uploads still pass through the API, up to 100 MB).

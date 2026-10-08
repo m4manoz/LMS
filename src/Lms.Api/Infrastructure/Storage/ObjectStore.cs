@@ -33,6 +33,12 @@ public sealed class S3StorageOptions
     public string? ServiceUrl { get; set; }
     public string Region { get; set; } = "us-east-1";
     public string Bucket { get; set; } = string.Empty;
+    /// <summary>
+    /// Organizations that keep their files in a bucket of their own instead of the shared one: organization id to bucket name
+    /// (Storage:S3:TenantBuckets:{organization id}=bucket). Every key starts with the organization's id, so the choice is made from the key itself.
+    /// The same credentials and endpoint serve all buckets, so each bucket must already exist and be reachable with them.
+    /// </summary>
+    public Dictionary<string, string> TenantBuckets { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>Required by MinIO and most self-hosted stores (bucket in the path rather than the host name).</summary>
     public bool ForcePathStyle { get; set; }
     public string KeyPrefix { get; set; } = "lms/";
@@ -48,16 +54,36 @@ public sealed class S3StorageOptions
     {
         var options = new S3StorageOptions();
         configuration.GetSection("Storage:S3").Bind(options);
+        // Configuration keys arrive in any letter case; match on the organization id however it was typed.
+        options.TenantBuckets = new Dictionary<string, string>(options.TenantBuckets.Select(item => new KeyValuePair<string, string>(Guid.TryParse(item.Key, out var id) ? id.ToString("D") : item.Key, item.Value?.Trim() ?? string.Empty)), StringComparer.OrdinalIgnoreCase);
         options.PresignSeconds = Math.Clamp(options.PresignSeconds, 60, 86400);
         if (!string.IsNullOrEmpty(options.KeyPrefix) && !options.KeyPrefix.EndsWith('/')) options.KeyPrefix += "/";
         return options;
     }
+
+    /// <summary>The bucket an object lives in: the organization's own when it has one, otherwise the shared bucket.</summary>
+    public string BucketFor(string key)
+    {
+        var slash = key.IndexOf('/');
+        return slash > 0 && Guid.TryParse(key.AsSpan(0, slash), out var tenantId) && TenantBuckets.TryGetValue(tenantId.ToString("D"), out var own) && !string.IsNullOrWhiteSpace(own) ? own : Bucket;
+    }
+
+    /// <summary>The bucket an organization's files go to.</summary>
+    public string BucketForTenant(Guid tenantId) => BucketFor($"{tenantId:D}/x");
+
+    /// <summary>Every bucket in use: the shared one and each organization's own.</summary>
+    public IReadOnlyList<string> AllBuckets() => TenantBuckets.Values.Append(Bucket).Where(item => !string.IsNullOrWhiteSpace(item)).Distinct(StringComparer.Ordinal).ToList();
 
     /// <summary>Returns the reasons the options cannot work, or an empty list.</summary>
     public IReadOnlyList<string> Validate()
     {
         var problems = new List<string>();
         if (string.IsNullOrWhiteSpace(Bucket)) problems.Add("Storage:S3:Bucket is required.");
+        foreach (var (tenant, bucket) in TenantBuckets)
+        {
+            if (!Guid.TryParse(tenant, out _)) problems.Add($"Storage:S3:TenantBuckets:{tenant} is not an organization id.");
+            else if (string.IsNullOrWhiteSpace(bucket)) problems.Add($"Storage:S3:TenantBuckets:{tenant} needs a bucket name.");
+        }
         if (!string.IsNullOrWhiteSpace(ServiceUrl) && !Uri.TryCreate(ServiceUrl, UriKind.Absolute, out _)) problems.Add("Storage:S3:ServiceUrl must be an absolute URL.");
         var hasKey = !string.IsNullOrWhiteSpace(AccessKeyId) || !string.IsNullOrWhiteSpace(AccessKeyIdReference);
         var hasSecret = !string.IsNullOrWhiteSpace(SecretAccessKey) || !string.IsNullOrWhiteSpace(SecretAccessKeyReference);
@@ -107,7 +133,7 @@ public sealed class S3ObjectStore : IObjectStore, IDisposable
     {
         await client.PutObjectAsync(new PutObjectRequest
         {
-            BucketName = options.Bucket, Key = Full(key), InputStream = content, ContentType = contentType, AutoCloseStream = false,
+            BucketName = options.BucketFor(key), Key = Full(key), InputStream = content, ContentType = contentType, AutoCloseStream = false,
             // The SDK needs a length for non-seekable streams; ours are seekable, but say so explicitly.
             Headers = { ContentLength = length }
         }, cancellationToken);
@@ -117,18 +143,18 @@ public sealed class S3ObjectStore : IObjectStore, IDisposable
     {
         try
         {
-            var response = await client.GetObjectAsync(options.Bucket, Full(key), cancellationToken);
+            var response = await client.GetObjectAsync(options.BucketFor(key), Full(key), cancellationToken);
             return new OwnedStream(response.ResponseStream, response); // disposing the stream also releases the HTTP response
         }
         catch (AmazonS3Exception exception) when (exception.StatusCode == HttpStatusCode.NotFound) { return null; }
     }
 
     public async Task DeleteAsync(string key, CancellationToken cancellationToken)
-        => await client.DeleteObjectAsync(options.Bucket, Full(key), cancellationToken);
+        => await client.DeleteObjectAsync(options.BucketFor(key), Full(key), cancellationToken);
 
     public async Task<bool> ExistsAsync(string key, CancellationToken cancellationToken)
     {
-        try { await client.GetObjectMetadataAsync(options.Bucket, Full(key), cancellationToken); return true; }
+        try { await client.GetObjectMetadataAsync(options.BucketFor(key), Full(key), cancellationToken); return true; }
         catch (AmazonS3Exception exception) when (exception.StatusCode == HttpStatusCode.NotFound) { return false; }
     }
 
@@ -136,7 +162,7 @@ public sealed class S3ObjectStore : IObjectStore, IDisposable
     {
         var url = client.GetPreSignedURL(new GetPreSignedUrlRequest
         {
-            BucketName = options.Bucket, Key = Full(key), Verb = HttpVerb.GET, Expires = DateTime.UtcNow.Add(lifetime),
+            BucketName = options.BucketFor(key), Key = Full(key), Verb = HttpVerb.GET, Expires = DateTime.UtcNow.Add(lifetime),
             Protocol = plainHttp ? Protocol.HTTP : Protocol.HTTPS,
             // Force the type we validated on upload and decide inline vs download ourselves.
             ResponseHeaderOverrides = new ResponseHeaderOverrides { ContentType = contentType, ContentDisposition = contentDisposition }
@@ -144,13 +170,20 @@ public sealed class S3ObjectStore : IObjectStore, IDisposable
         return Task.FromResult<Uri?>(new Uri(url));
     }
 
+    /// <summary>Every bucket must answer: one organization's unreachable bucket makes the API not ready, so it is noticed before learners are.</summary>
     public async Task PingAsync(CancellationToken cancellationToken)
-        => await client.ListObjectsV2Async(new ListObjectsV2Request { BucketName = options.Bucket, MaxKeys = 1, Prefix = options.KeyPrefix }, cancellationToken);
+    {
+        foreach (var bucket in options.AllBuckets())
+            await client.ListObjectsV2Async(new ListObjectsV2Request { BucketName = bucket, MaxKeys = 1, Prefix = options.KeyPrefix }, cancellationToken);
+    }
 
     public async Task EnsureBucketAsync(CancellationToken cancellationToken)
     {
-        if (await AmazonS3Util.DoesS3BucketExistV2Async(client, options.Bucket)) return;
-        await client.PutBucketAsync(new PutBucketRequest { BucketName = options.Bucket }, cancellationToken);
+        foreach (var bucket in options.AllBuckets())
+        {
+            if (await AmazonS3Util.DoesS3BucketExistV2Async(client, bucket)) continue;
+            await client.PutBucketAsync(new PutBucketRequest { BucketName = bucket }, cancellationToken);
+        }
     }
 
     public void Dispose() => client.Dispose();

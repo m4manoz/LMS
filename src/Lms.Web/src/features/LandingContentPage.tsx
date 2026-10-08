@@ -7,7 +7,8 @@ import { Select } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { ApiError, apiRequest } from '@/lib/api'
-import { isSafeLink, type LandingContent, type LandingEditorData, type LandingRow } from '@/lib/publicApi'
+import { isSafeLink, type LandingContent, type LandingEditorData, type LandingPicture, type LandingRow } from '@/lib/publicApi'
+import PictureField from './landing/PictureField'
 
 type CourseOption = { id: string; code: string; title: string; status: string }
 type CategoryOption = { id: string; name: string }
@@ -73,6 +74,7 @@ export default function LandingContentPage() {
   const [saved, setSaved] = useState('')
   const [courses, setCourses] = useState<CourseOption[]>([])
   const [categories, setCategories] = useState<CategoryOption[]>([])
+  const [pictures, setPictures] = useState<LandingPicture[]>([])
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -82,6 +84,7 @@ export default function LandingContentPage() {
     apiRequest<LandingEditorData>('/api/v1/tenant/landing').then(apply).catch((exception) => setError(readError(exception, 'Unable to load the landing page.')))
     apiRequest<CourseOption[]>('/api/v1/tenant/courses').then((list) => setCourses(Array.isArray(list) ? list.filter((course) => course.status === 'Published') : [])).catch(() => setCourses([]))
     apiRequest<CategoryOption[]>('/api/v1/tenant/catalog/categories').then((list) => setCategories(Array.isArray(list) ? list : [])).catch(() => setCategories([]))
+    apiRequest<LandingPicture[]>('/api/v1/tenant/landing/images').then((list) => setPictures(Array.isArray(list) ? list : [])).catch(() => setPictures([]))
   }, [apply])
 
   const dirty = useMemo(() => draft !== null && JSON.stringify(draft) !== saved, [draft, saved])
@@ -105,6 +108,21 @@ export default function LandingContentPage() {
     try { apply(await apiRequest<LandingEditorData>('/api/v1/tenant/landing/reset', { method: 'POST' })); setNotice('The standard page is back.') }
     catch (exception) { setError(readError(exception, 'Unable to reset the landing page.')) }
     finally { setBusy(false) }
+  }
+
+  const added = (picture: LandingPicture) => setPictures((current) => [picture, ...current.filter((item) => item.id !== picture.id)])
+
+  /** Deletes a picture from the library and takes it off the page it was on, so the page can still be saved. */
+  async function deletePicture(picture: LandingPicture) {
+    if (!window.confirm(`Delete the picture “${picture.fileName}”? It is taken off your page too.`)) return
+    setBusy(true); setError(null)
+    try {
+      await apiRequest(`/api/v1/tenant/landing/images/${picture.id}`, { method: 'DELETE' })
+      setPictures((current) => current.filter((item) => item.id !== picture.id))
+      const clear = (id?: string) => (id === picture.id ? '' : id)
+      setDraft((current) => current && ({ ...current, logoImageId: clear(current.logoImageId), heroImageId: clear(current.heroImageId), banners: current.banners.map((banner) => ({ ...banner, imageId: clear(banner.imageId) })) }))
+      setNotice('Picture deleted.')
+    } catch (exception) { setError(readError(exception, 'Unable to delete the picture.')) } finally { setBusy(false) }
   }
 
   const rowEditor = (row: LandingRow, index: number, change: (next: LandingRow) => void) => (
@@ -162,6 +180,22 @@ export default function LandingContentPage() {
 
         <TabsContent value="top">
           <div className="flex flex-col gap-6">
+            <FormSection title="Logo and pictures" description="Your logo shows in the header and footer; the main picture sits beside the heading. PNG, JPEG, WebP or GIF, up to 3 MB each.">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <PictureField id="logo-picture" label="Logo" value={draft.logoImageId ?? ''} pictures={pictures} slug={data.slug} onChange={(logoImageId) => set({ logoImageId })} onUploaded={added} />
+                <PictureField id="hero-picture" label="Main picture" value={draft.heroImageId ?? ''} pictures={pictures} slug={data.slug} onChange={(heroImageId) => set({ heroImageId })} onUploaded={added} />
+              </div>
+              {pictures.length > 0 ? (
+                <ul aria-label="Your pictures" className="flex flex-col gap-1 text-sm">
+                  {pictures.map((picture) => (
+                    <li key={picture.id} className="flex items-center justify-between gap-2 rounded border border-border px-3 py-1.5">
+                      <span className="truncate">{picture.fileName} <span className="text-xs text-muted-foreground">({Math.max(1, Math.round(picture.sizeBytes / 1024))} KB)</span></span>
+                      <Button type="button" variant="softDestructive" size="sm" disabled={busy} aria-label={`Delete picture ${picture.fileName}`} onClick={() => void deletePicture(picture)}>Delete</Button>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </FormSection>
             <FormSection title="Main heading" description="The first thing visitors read.">
               <div className="grid gap-3 sm:grid-cols-2">
                 {text('hero-title', 'Heading', draft.hero.title, (value) => set({ hero: { ...draft.hero, title: value } }), { max: 200, required: true })}
@@ -172,13 +206,14 @@ export default function LandingContentPage() {
               </div>
             </FormSection>
             <FormSection title="Banners" description="Large messages that turn over at the top, such as a new course or an offer. Up to 6.">
-              <ListEditor label="banner" items={draft.banners} max={6} addLabel="Add a banner" blank={() => ({ id: '', title: '', text: '', buttonLabel: '', link: '', theme: 'blue' })} onChange={(banners) => set({ banners })}
+              <ListEditor label="banner" items={draft.banners} max={6} addLabel="Add a banner" blank={() => ({ id: '', title: '', text: '', buttonLabel: '', link: '', theme: 'blue', imageId: '' })} onChange={(banners) => set({ banners })}
                 render={(banner, index, change) => (<>
                   {text(`banner-title-${index}`, 'Title', banner.title, (value) => change({ ...banner, title: value }), { max: 200, required: true })}
                   <Field id={`banner-theme-${index}`} label="Colour"><Select id={`banner-theme-${index}`} value={banner.theme} onChange={(event) => change({ ...banner, theme: event.target.value })}>{data.themes.map((theme) => <option key={theme} value={theme}>{theme[0].toUpperCase() + theme.slice(1)}</option>)}</Select></Field>
                   {text(`banner-text-${index}`, 'Text', banner.text, (value) => change({ ...banner, text: value }), { max: 400, area: true })}
                   {text(`banner-button-${index}`, 'Button label', banner.buttonLabel, (value) => change({ ...banner, buttonLabel: value }), { max: 60 })}
                   {text(`banner-link-${index}`, 'Button link', banner.link, (value) => change({ ...banner, link: value }), { hint: LINK_HINT })}
+                  <PictureField id={`banner-picture-${index}`} label="Banner picture" value={banner.imageId ?? ''} pictures={pictures} slug={data.slug} onChange={(imageId) => change({ ...banner, imageId })} onUploaded={added} />
                 </>)} />
             </FormSection>
             <FormSection title="What brings people here" description="Quick choices under the banners. Each one scrolls to a part of the page or opens a link.">

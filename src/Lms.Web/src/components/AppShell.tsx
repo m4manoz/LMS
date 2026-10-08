@@ -3,6 +3,7 @@ import { Bell, MessageSquare, ChevronDown, ChevronRight, GraduationCap, LogOut, 
 import { Button } from '@/components/ui/button'
 import { apiRequest, type StoredSession } from '@/lib/api'
 import { canViewMenuItem, menuGroups } from '@/lib/navigation'
+import { subscribeMessages } from '@/lib/liveMessages'
 import { NOTIFICATIONS_CHANGED } from '@/lib/notifications'
 import { cn } from '@/lib/utils'
 
@@ -44,7 +45,9 @@ export default function AppShell({ session, activeMenu, onNavigate, onLogout, ca
       .then((result) => { if (active) setUnreadMessages(result.count) }).catch(() => undefined)
     void load()
     const timer = window.setInterval(load, 60000)
-    return () => { active = false; window.clearInterval(timer) }
+    // The badge changes the moment a message arrives or is deleted, instead of waiting for the next poll.
+    const stopLive = subscribeMessages(() => { void load() })
+    return () => { active = false; window.clearInterval(timer); stopLive() }
   }, [canSeeMessages, session.accessToken])
 
   function navigate(id: string) {

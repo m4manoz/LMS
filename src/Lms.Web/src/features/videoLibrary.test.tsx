@@ -14,7 +14,7 @@ vi.mock('@/lib/api', async () => {
   return { ...actual, apiRequest: (...args: unknown[]) => request(...args) }
 })
 vi.mock('@/lib/auth', () => ({ useAuth: () => ({ session: { permissions } }) }))
-vi.mock('@/lib/upload', () => ({ uploadWithProgress: (...args: unknown[]) => upload(...args) }))
+vi.mock('@/lib/pieceUpload', () => ({ uploadVideoInPieces: (...args: unknown[]) => upload(...args) }))
 vi.mock('@/lib/video', async () => {
   const actual = await vi.importActual<typeof import('@/lib/video')>('@/lib/video')
   return { ...actual, readVideoDuration: () => Promise.resolve(754) }
@@ -251,7 +251,7 @@ describe('VideoLibraryPage as staff', () => {
   })
 
   it('uploads a video with a progress bar, then lists it and says it was added', async () => {
-    upload.mockImplementation((_path: string, _form: FormData, onProgress: (value: number) => void) => ({ promise: Promise.resolve().then(() => { onProgress(0.5); return video({ id: 'v7', title: 'Uploaded one' }) }), cancel: vi.fn() }))
+    upload.mockImplementation((_file: File, _fields: unknown, onProgress: (value: number) => void) => Promise.resolve().then(() => { onProgress(0.5); return video({ id: 'v7', title: 'Uploaded one' }) }))
     render(<VideoLibraryPage />)
     await userEvent.click(await screen.findByRole('button', { name: 'Add video' }))
     const panel = await screen.findByRole('dialog', { name: 'Add a video' })
@@ -268,18 +268,15 @@ describe('VideoLibraryPage as staff', () => {
     await userEvent.click(within(panel).getByRole('button', { name: 'Upload video' }))
 
     await waitFor(() => expect(upload).toHaveBeenCalledTimes(1))
-    const [path, form] = upload.mock.calls[0] as [string, FormData]
-    expect(path).toBe('/api/v1/tenant/videos')
-    expect(form.get('courseId')).toBe('c1')
-    expect(form.get('title')).toBe('Uploaded one')
-    expect(form.get('durationSeconds')).toBe('754')                                          // read from the file itself
-    expect((form.get('file') as File).name).toBe('lesson.mp4')
+    const [file, fields] = upload.mock.calls[0] as [File, { courseId: string; title: string; durationSeconds: number }]
+    expect(file.name).toBe('lesson.mp4')
+    expect(fields).toMatchObject({ courseId: 'c1', title: 'Uploaded one', durationSeconds: 754 })   // the length is read from the file itself
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     expect(await screen.findByText('“Uploaded one” was added.')).toBeInTheDocument()
   })
 
   it('shows the server message when an upload is refused', async () => {
-    upload.mockImplementation(() => ({ promise: Promise.resolve().then(() => { throw new ApiError('The file contents do not match its declared type.', 400) }), cancel: vi.fn() }))
+    upload.mockImplementation(() => Promise.resolve().then(() => { throw new ApiError('The file contents do not match its declared type.', 400) }))
     render(<VideoLibraryPage />)
     await userEvent.click(await screen.findByRole('button', { name: 'Add video' }))
     const panel = await screen.findByRole('dialog', { name: 'Add a video' })
@@ -320,7 +317,7 @@ describe('VideoLibraryPage as staff', () => {
     await userEvent.type(within(panel).getByLabelText('Title'), 'Limits, part 1')
     await userEvent.click(within(panel).getByRole('button', { name: 'Save changes' }))
     await waitFor(() => expect(calls('/videos/v1', 'PUT')).toHaveLength(1))
-    expect(JSON.parse(calls('/videos/v1', 'PUT')[0][1].body)).toEqual({ title: 'Limits, part 1', description: 'About limits' })
+    expect(JSON.parse(calls('/videos/v1', 'PUT')[0][1].body)).toEqual({ title: 'Limits, part 1', description: 'About limits', tags: [] })
     expect(await within(panel).findByText('Saved.')).toBeInTheDocument()
 
     await userEvent.click(within(panel).getByRole('button', { name: 'Delete video' }))

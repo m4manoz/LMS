@@ -44,6 +44,12 @@ public static class LiveClassEndpoints
         tenant.MapPost("/sessions/{sessionId:guid}/recording/start", StartRecordingAsync).RequireAuthorization("tenant.liveclass.manage");
         tenant.MapPost("/sessions/{sessionId:guid}/recording/stop", StopRecordingAsync).RequireAuthorization("tenant.liveclass.manage");
         tenant.MapPost("/sessions/{sessionId:guid}/recording/retry", RetryRecordingAsync).RequireAuthorization("tenant.liveclass.manage");
+        tenant.MapGet("/sessions/{sessionId:guid}/recording/tracks", ListTracksAsync).RequireAuthorization("tenant.liveclass.manage");
+        // The host switches off one person's microphone, or everyone's but their own (the person can switch it on again).
+        tenant.MapPost("/sessions/{sessionId:guid}/mute/{userId:guid}", MuteOneAsync).RequireAuthorization("tenant.liveclass.manage");
+        tenant.MapPost("/sessions/{sessionId:guid}/mute-all", MuteAllAsync).RequireAuthorization("tenant.liveclass.manage");
+        // LiveKit calls this itself, so it carries no sign-in; the call is checked against the organization's LiveKit secret instead.
+        app.MapPost("/api/v1/integrations/livekit/webhook", ReceiveWebhookAsync).AllowAnonymous();
         // Everyone in the class can see whose hand is up; only the host and staff can put someone else's hand down.
         tenant.MapGet("/sessions/{sessionId:guid}/hand-raises", ListHandRaisesAsync).RequireAuthorization("tenant.liveclass.read");
         tenant.MapPost("/sessions/{sessionId:guid}/hand-raises/{userId:guid}/lower", LowerHandRaiseAsync).RequireAuthorization("tenant.liveclass.manage");
@@ -52,6 +58,48 @@ public static class LiveClassEndpoints
         tenant.MapPost("/sessions/{sessionId:guid}/polls", CreatePollAsync).RequireAuthorization("tenant.liveclass.manage");
         tenant.MapPost("/sessions/{sessionId:guid}/polls/{pollId:guid}/vote", VotePollAsync).RequireAuthorization("tenant.collaboration.manage");
         tenant.MapPost("/sessions/{sessionId:guid}/polls/{pollId:guid}/close", ClosePollAsync).RequireAuthorization("tenant.liveclass.manage");
+    }
+
+    private static async Task<IResult> ReceiveWebhookAsync(HttpContext httpContext, LiveKitClassService service, CancellationToken cancellationToken)
+    {
+        if (httpContext.Request.ContentLength is > 1_000_000) return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+        using var reader = new StreamReader(httpContext.Request.Body);
+        var body = await reader.ReadToEndAsync(cancellationToken);
+        var outcome = await service.HandleWebhookAsync(body, httpContext.Request.Headers.Authorization.ToString(), cancellationToken);
+        return outcome == WebhookOutcome.Rejected ? Results.Unauthorized() : Results.Ok();
+    }
+
+    private static async Task<IResult> MuteOneAsync(HttpContext httpContext, LmsDbContext db, LiveKitClassService service, Guid sessionId, Guid userId, CancellationToken cancellationToken)
+    {
+        if (GetUserId(httpContext) is not Guid askedBy) return Results.Unauthorized();
+        var session = await db.LiveClassSessions.SingleOrDefaultAsync(item => item.Id == sessionId, cancellationToken);
+        if (session is null) return Results.NotFound();
+        if (!await CanAccessSessionAsync(httpContext, db, session, askedBy, cancellationToken)) return Results.Forbid();
+        var result = await service.MuteAsync(session, userId, askedBy, cancellationToken);
+        return result.Ok ? Results.Ok(new { muted = result.Muted }) : Results.Json(new { message = result.Message }, statusCode: result.StatusCode);
+    }
+
+    private static async Task<IResult> MuteAllAsync(HttpContext httpContext, LmsDbContext db, LiveKitClassService service, Guid sessionId, CancellationToken cancellationToken)
+    {
+        if (GetUserId(httpContext) is not Guid askedBy) return Results.Unauthorized();
+        var session = await db.LiveClassSessions.SingleOrDefaultAsync(item => item.Id == sessionId, cancellationToken);
+        if (session is null) return Results.NotFound();
+        if (!await CanAccessSessionAsync(httpContext, db, session, askedBy, cancellationToken)) return Results.Forbid();
+        var result = await service.MuteAsync(session, null, askedBy, cancellationToken);
+        return result.Ok ? Results.Ok(new { muted = result.Muted }) : Results.Json(new { message = result.Message }, statusCode: result.StatusCode);
+    }
+
+    /// <summary>The recordings of each person on their own, with the course file to open for each finished one.</summary>
+    private static async Task<IResult> ListTracksAsync(HttpContext httpContext, LmsDbContext db, Guid sessionId, CancellationToken cancellationToken)
+    {
+        var session = await db.LiveClassSessions.AsNoTracking().SingleOrDefaultAsync(item => item.Id == sessionId, cancellationToken);
+        if (session is null) return Results.NotFound();
+        if (GetUserId(httpContext) is not Guid userId || !await CanAccessSessionAsync(httpContext, db, session, userId, cancellationToken)) return Results.Forbid();
+        var tracks = await db.SessionTrackRecordings.AsNoTracking().Where(item => item.SessionId == sessionId).OrderBy(item => item.StartedAtUtc).ToListAsync(cancellationToken);
+        var ids = tracks.Select(item => item.UserId).Distinct().ToArray();
+        var names = await db.Users.AsNoTracking().Where(item => ids.Contains(item.Id)).ToDictionaryAsync(item => item.Id, item => item.DisplayName, cancellationToken);
+        return Results.Ok(tracks.Select(item => new TrackRecordingResponse(item.Id, item.UserId, names.GetValueOrDefault(item.UserId, "User"), item.Status.ToString(), item.StartedAtUtc, item.FinishedAtUtc, item.DurationSeconds, item.SizeBytes, item.LastError,
+            item.ContentAssetId is Guid asset && session.CourseId is Guid course ? $"/api/v1/tenant/courses/{course:D}/assets/{asset:D}" : null)).ToArray());
     }
 
     private static async Task<IResult> ListSessionsAsync(HttpContext httpContext, LmsDbContext db, CancellationToken cancellationToken)
@@ -67,7 +115,7 @@ public static class LiveClassEndpoints
         return Results.Ok(sessions.Select(item => ToResponse(item, item.CourseId is Guid courseId && courses.TryGetValue(courseId, out var title) ? title : null)).ToArray());
     }
 
-    private static async Task<IResult> CreateSessionAsync(HttpContext httpContext, LmsDbContext db, LiveClassProviderResolver resolver, ITenantContext tenantContext, CreateLiveSessionRequest request, CancellationToken cancellationToken)
+    private static async Task<IResult> CreateSessionAsync(HttpContext httpContext, LmsDbContext db, LiveClassProviderResolver resolver, ITenantContext tenantContext, LiveKitRecordings liveKitRecordings, CreateLiveSessionRequest request, CancellationToken cancellationToken)
     {
         if (tenantContext.TenantId is not Guid tenantId || GetUserId(httpContext) is not Guid hostUserId) return Results.Unauthorized();
         if (string.IsNullOrWhiteSpace(request.Title) || request.Title.Trim().Length > 250) return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.Title)] = ["Title is required and must be at most 250 characters."] });
@@ -79,6 +127,15 @@ public static class LiveClassEndpoints
         try { meeting = await provider.CreateMeetingAsync(new LiveMeetingRequest(session.Id, session.Title, session.StartAtUtc, session.EndAtUtc, request.MeetingUrl, settings?.JitsiBaseUrl), cancellationToken); }
         catch (LiveClassProviderException exception) { return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.MeetingUrl)] = [exception.Message] }); }
         session.Provider = meeting.Provider; session.ProviderMeetingId = meeting.MeetingId; session.JoinUrl = meeting.JoinUrl; session.HostUrl = meeting.HostUrl;
+        if (request.AutoRecord)
+        {
+            // Scheduling the class this way is the host's agreement to recording it.
+            if (!session.Provider.Equals("livekit", StringComparison.OrdinalIgnoreCase)) return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.AutoRecord)] = ["Only classes held in LiveKit can record themselves."] });
+            if (request.CourseId is null) return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.AutoRecord)] = ["Link the class to a course so its recording can be saved in the video library."] });
+            if (!liveKitRecordings.Enabled) return Results.ValidationProblem(new Dictionary<string, string[]> { [nameof(request.AutoRecord)] = ["Recording LiveKit classes is not set up on this server."] });
+            session.AutoRecord = true;
+            db.SessionConsents.Add(new SessionConsent { Id = Guid.NewGuid(), TenantId = tenantId, SessionId = session.Id, UserId = hostUserId, ConsentType = "recording", Granted = true, RecordedAtUtc = DateTimeOffset.UtcNow, IpAddress = httpContext.Connection.RemoteIpAddress?.ToString() });
+        }
         db.LiveClassSessions.Add(session); await db.SaveChangesAsync(cancellationToken);
         return Results.Created($"/api/v1/tenant/live-classes/sessions/{session.Id:D}", ToResponse(session, null));
     }
@@ -173,6 +230,7 @@ public static class LiveClassEndpoints
         if (!await CanAccessBySessionIdAsync(httpContext, db, sessionId, cancellationToken)) return Results.Forbid();
         var attendance = await db.SessionAttendances.SingleOrDefaultAsync(item => item.SessionId == sessionId && item.UserId == userId, cancellationToken);
         if (attendance is null) return Results.NotFound();
+        if (attendance.Status == AttendanceStatus.Left) return Results.Ok(new AttendanceResponse(attendance.Id, attendance.UserId, "", attendance.Status.ToString(), attendance.JoinedAtUtc, attendance.LeftAtUtc, attendance.DurationSeconds));   // LiveKit has already said so
         var now = DateTimeOffset.UtcNow; attendance.Status = AttendanceStatus.Left; attendance.LeftAtUtc = now; attendance.DurationSeconds = Math.Max(0, (int)(now - attendance.JoinedAtUtc).TotalSeconds); attendance.UpdatedAtUtc = now;
         await db.SaveChangesAsync(cancellationToken); return Results.Ok(new AttendanceResponse(attendance.Id, attendance.UserId, "", attendance.Status.ToString(), attendance.JoinedAtUtc, attendance.LeftAtUtc, attendance.DurationSeconds));
     }
@@ -433,7 +491,7 @@ public static class LiveClassEndpoints
     private static async Task<bool> CanAccessSessionAsync(HttpContext httpContext, LmsDbContext db, LiveClassSession session, Guid userId, CancellationToken cancellationToken)
     { if (HasPermission(httpContext, LmsPermissions.LiveClassManage) || session.HostUserId == userId) return true; return session.CourseId is Guid courseId && await db.Enrollments.AnyAsync(item => item.CourseId == courseId && item.LearnerUserId == userId && (item.Status == Lms.Api.Domain.Learning.EnrollmentStatus.Active || item.Status == Lms.Api.Domain.Learning.EnrollmentStatus.Completed), cancellationToken); }
 
-    private static LiveSessionResponse ToResponse(LiveClassSession item, string? courseTitle) => new(item.Id, item.CourseId, courseTitle, item.HostUserId, item.Title, item.Description, item.Provider, item.ProviderMeetingId, item.JoinUrl, item.HostUrl, item.StartAtUtc, item.EndAtUtc, item.Status.ToString(), item.RequireApproval);
+    private static LiveSessionResponse ToResponse(LiveClassSession item, string? courseTitle) => new(item.Id, item.CourseId, courseTitle, item.HostUserId, item.Title, item.Description, item.Provider, item.ProviderMeetingId, item.JoinUrl, item.HostUrl, item.StartAtUtc, item.EndAtUtc, item.Status.ToString(), item.RequireApproval, item.AutoRecord);
     private static RecordingResponse ToRecordingResponse(SessionRecording item) => new(item.Id, item.SessionId, item.Provider, item.ProviderRecordingId, item.RecordingUrl, item.Status.ToString(), item.AttemptCount, item.MaxAttempts, item.LastError, item.RequestedAtUtc, item.AvailableAtUtc, item.RetainUntilUtc, item.VideoId);
     private static async Task<AnnouncementResponse[]> WithAuthorNamesAsync(LmsDbContext db, List<SessionAnnouncement> items, CancellationToken cancellationToken) { var ids = items.Select(item => item.AuthorUserId).ToArray(); var users = await db.Users.AsNoTracking().Where(item => ids.Contains(item.Id)).ToDictionaryAsync(item => item.Id, item => item.DisplayName, cancellationToken); return items.Select(item => new AnnouncementResponse(item.Id, item.AuthorUserId, users.TryGetValue(item.AuthorUserId, out var name) ? name : "User", item.Body, item.IsPinned, item.CreatedAtUtc)).ToArray(); }
     private static async Task<ChatMessageResponse[]> WithChatNamesAsync(LmsDbContext db, List<SessionChatMessage> items, CancellationToken cancellationToken) { var ids = items.Select(item => item.UserId).ToArray(); var users = await db.Users.AsNoTracking().Where(item => ids.Contains(item.Id)).ToDictionaryAsync(item => item.Id, item => item.DisplayName, cancellationToken); return items.Select(item => new ChatMessageResponse(item.Id, item.UserId, users.TryGetValue(item.UserId, out var name) ? name : "User", item.Message, item.CreatedAtUtc)).ToArray(); }
@@ -443,7 +501,8 @@ public static class LiveClassEndpoints
     private static bool HasPermission(HttpContext context, string permission) => context.User.Claims.Any(item => item.Type == "permission" && item.Value.Equals(permission, StringComparison.OrdinalIgnoreCase));
 }
 
-public sealed record CreateLiveSessionRequest(Guid? CourseId, string Title, string? Description, DateTimeOffset StartAtUtc, DateTimeOffset EndAtUtc, string? MeetingUrl = null, bool RequireApproval = false);
+public sealed record CreateLiveSessionRequest(Guid? CourseId, string Title, string? Description, DateTimeOffset StartAtUtc, DateTimeOffset EndAtUtc, string? MeetingUrl = null, bool RequireApproval = false, bool AutoRecord = false);
+public sealed record TrackRecordingResponse(Guid Id, Guid UserId, string DisplayName, string Status, DateTimeOffset StartedAtUtc, DateTimeOffset? FinishedAtUtc, int? DurationSeconds, long SizeBytes, string? LastError, string? DownloadUrl);
 public sealed record LinkRecordingRequest(string? Url);
 public sealed record LiveProviderResponse(string Provider, bool RequiresMeetingLink, bool CanRecord);
 public sealed record CreateAnnouncementRequest(string Body, bool IsPinned = false);
@@ -452,7 +511,7 @@ public sealed record SetHandRaiseRequest(bool Raised);
 public sealed record CreatePollRequest(string Question, string[]? Options);
 public sealed record VotePollRequest(int OptionIndex);
 public sealed record RecordingConsentRequest(bool Granted);
-public sealed record LiveSessionResponse(Guid Id, Guid? CourseId, string? CourseTitle, Guid HostUserId, string Title, string? Description, string Provider, string ProviderMeetingId, string JoinUrl, string HostUrl, DateTimeOffset StartAtUtc, DateTimeOffset EndAtUtc, string Status, bool RequireApproval = false);
+public sealed record LiveSessionResponse(Guid Id, Guid? CourseId, string? CourseTitle, Guid HostUserId, string Title, string? Description, string Provider, string ProviderMeetingId, string JoinUrl, string HostUrl, DateTimeOffset StartAtUtc, DateTimeOffset EndAtUtc, string Status, bool RequireApproval = false, bool AutoRecord = false);
 public sealed record JoinRequestResponse(Guid UserId, string UserName, string Status, DateTimeOffset RequestedAtUtc);
 public sealed record AttendanceResponse(Guid Id, Guid UserId, string UserName, string Status, DateTimeOffset JoinedAtUtc, DateTimeOffset? LeftAtUtc, int DurationSeconds);
 public sealed record AnnouncementResponse(Guid Id, Guid AuthorUserId, string AuthorName, string Body, bool IsPinned, DateTimeOffset CreatedAtUtc);

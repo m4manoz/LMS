@@ -46,3 +46,16 @@ public sealed class CourseApplication
     /// <summary>The invitation sent when the application was approved.</summary>
     public Guid? InvitationId { get; set; }
 }
+
+/// <summary>A picture an organization uploaded for its public page (its logo, a banner or the main image). Only pictures: no SVG or other formats a browser could run.</summary>
+public sealed class LandingImage
+{
+    public Guid Id { get; set; }
+    public Guid TenantId { get; set; }
+    public string FileName { get; set; } = string.Empty;
+    public string ContentType { get; set; } = string.Empty;
+    public long SizeBytes { get; set; }
+    public string StorageKey { get; set; } = string.Empty;
+    public Guid UploadedByUserId { get; set; }
+    public DateTimeOffset CreatedAtUtc { get; set; }
+}

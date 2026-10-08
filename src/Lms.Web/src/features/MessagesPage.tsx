@@ -5,20 +5,27 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
-import { Plus } from 'lucide-react'
+import { Paperclip, Plus, X } from 'lucide-react'
 import SidePanel from '@/components/SidePanel'
 import { EmptyState, ErrorBanner, Field, FormActions, FormLayout, FormSection, ListRow, PageHeader, RowList } from '@/components/form'
 import { Textarea } from '@/components/ui/textarea'
-import { ApiError, apiRequest } from '@/lib/api'
+import { ApiError, apiRequest, downloadFile } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
+import { subscribeMessages } from '@/lib/liveMessages'
 import { cn } from '@/lib/utils'
 
 type Conversation = { id: string; kind: 'Direct' | 'Course'; title: string; courseId: string | null; lastMessagePreview: string | null; lastActivityAtUtc: string; unreadCount: number }
-type Message = { id: string; senderUserId: string; senderName: string; body: string; createdAtUtc: string; isMine: boolean }
+type Attachment = { fileName: string; sizeBytes: number; contentType: string }
+type Message = { id: string; senderUserId: string; senderName: string; body: string; createdAtUtc: string; isMine: boolean; editedAtUtc?: string | null; isDeleted?: boolean; attachment?: Attachment | null }
 type Contact = { userId: string; name: string; email: string; isStaff: boolean }
 type CourseOption = { courseId: string; title: string }
 
+/** How often to look for news when the live connection is down, and as a safety net when it is up. */
 const POLL_MS = 10000
+const POLL_WHEN_LIVE_MS = 60000
+const MAX_FILE_BYTES = 25 * 1024 * 1024
+
+function formatBytes(bytes: number) { return bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB` }
 
 /** "14:05" for today, otherwise "3 Oct". */
 export function formatMessageTime(value: string, now = new Date()): string {
@@ -31,6 +38,7 @@ export default function MessagesPage() {
   const { session } = useAuth()
   const canSend = session?.permissions.includes('collaboration.manage') ?? false
   const canManageCourses = session?.permissions.includes('course.manage') ?? false
+  const canModerate = session?.permissions.includes('forum.moderate') ?? false
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
@@ -43,6 +51,11 @@ export default function MessagesPage() {
   const [contactId, setContactId] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [file, setFile] = useState<File | null>(null)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editText, setEditText] = useState('')
+  const [live, setLive] = useState(false)
+  const fileRef = useRef<HTMLInputElement>(null)
   const endRef = useRef<HTMLDivElement>(null)
 
   const selected = conversations.find((item) => item.id === selectedId) ?? null
@@ -62,14 +75,18 @@ export default function MessagesPage() {
 
   useEffect(() => { void loadConversations() }, [loadConversations])
 
-  // Keep the open thread and the list fresh while the page is visible.
+  // News arrives the moment it happens over the live connection; polling keeps going as a safety net, faster when the connection is down.
+  useEffect(() => subscribeMessages((signal) => {
+    void loadConversations()
+    if (selectedId && signal.conversationId === selectedId) void loadThread(selectedId)
+  }, setLive), [selectedId, loadConversations, loadThread])
   useEffect(() => {
     const timer = window.setInterval(() => {
       void loadConversations()
       if (selectedId) void loadThread(selectedId)
-    }, POLL_MS)
+    }, live ? POLL_WHEN_LIVE_MS : POLL_MS)
     return () => window.clearInterval(timer)
-  }, [selectedId, loadConversations, loadThread])
+  }, [selectedId, live, loadConversations, loadThread])
 
   useEffect(() => { endRef.current?.scrollIntoView?.({ block: 'end' }) }, [messages.length, selectedId])
 
@@ -103,6 +120,7 @@ export default function MessagesPage() {
     setNewOpen(false)
     setCoursesOpen(false)
     setMessages([])
+    clearFile(); setEditingId(null)
     await loadConversations()
     await loadThread(conversationId)
   }
@@ -122,16 +140,54 @@ export default function MessagesPage() {
     await open(id)
   }, 'Unable to open the course chat.')
 
+  function clearFile() { setFile(null); if (fileRef.current) fileRef.current.value = '' }
+
+  function chooseFile(chosen: File | undefined) {
+    if (!chosen) return
+    if (chosen.size > MAX_FILE_BYTES) { setError('Files must be 25 MB or smaller.'); clearFile(); return }
+    setError(null); setFile(chosen)
+  }
+
   const send = () => {
     const body = draft.trim()
-    if (!selectedId || !body) return Promise.resolve()
+    if (!selectedId || (!body && !file)) return Promise.resolve()
     return run(async () => {
-      await apiRequest(`/api/v1/tenant/messages/conversations/${selectedId}/messages`, { method: 'POST', body: JSON.stringify({ body }) })
-      setDraft('')
+      if (file) {
+        const form = new FormData()
+        form.append('file', file)
+        if (body) form.append('body', body)
+        await apiRequest(`/api/v1/tenant/messages/conversations/${selectedId}/messages/upload`, { method: 'POST', body: form })
+      } else {
+        await apiRequest(`/api/v1/tenant/messages/conversations/${selectedId}/messages`, { method: 'POST', body: JSON.stringify({ body }) })
+      }
+      setDraft(''); clearFile()
       await loadThread(selectedId)
       await loadConversations()
     }, 'Unable to send the message.')
   }
+
+  const startEdit = (message: Message) => { setEditingId(message.id); setEditText(message.body); setError(null) }
+  const saveEdit = (message: Message) => {
+    if (!selectedId) return Promise.resolve()
+    const body = editText.trim()
+    if (!body && !message.attachment) { setError('A message cannot be empty.'); return Promise.resolve() }
+    return run(async () => {
+      await apiRequest(`/api/v1/tenant/messages/conversations/${selectedId}/messages/${message.id}`, { method: 'PUT', body: JSON.stringify({ body }) })
+      setEditingId(null)
+      await loadThread(selectedId)
+    }, 'Unable to save the change.')
+  }
+  const removeMessage = (message: Message) => {
+    if (!selectedId || !window.confirm('Delete this message? It will be removed for everyone in the conversation.')) return Promise.resolve()
+    return run(async () => {
+      await apiRequest(`/api/v1/tenant/messages/conversations/${selectedId}/messages/${message.id}`, { method: 'DELETE' })
+      await loadThread(selectedId)
+      await loadConversations()
+    }, 'Unable to delete the message.')
+  }
+  const downloadAttachment = (message: Message) => run(
+    () => downloadFile(`/api/v1/tenant/messages/conversations/${selectedId}/messages/${message.id}/attachment`, message.attachment?.fileName ?? 'attachment'),
+    'Unable to download the file.')
 
   const totalUnread = conversations.reduce((sum, item) => sum + item.unreadCount, 0)
 
@@ -183,12 +239,43 @@ export default function MessagesPage() {
               <div className="flex max-h-[24rem] min-h-48 flex-1 flex-col gap-2 overflow-y-auto rounded-md border border-border p-3" aria-live="polite">
                 {messages.length === 0 ? <p className="text-sm text-muted-foreground">No messages yet. Say hello.</p> : messages.map((message) => (
                   <div key={message.id} className={cn('flex flex-col gap-0.5', message.isMine ? 'items-end' : 'items-start')}>
-                    <small className="text-muted-foreground">{message.isMine ? 'You' : message.senderName} · {formatMessageTime(message.createdAtUtc)}</small>
-                    <p className={cn('max-w-[85%] whitespace-pre-wrap rounded-lg px-3 py-2 text-sm', message.isMine ? 'bg-primary/15 text-foreground' : 'bg-muted')}>{message.body}</p>
+                    <small className="text-muted-foreground">{message.isMine ? 'You' : message.senderName} · {formatMessageTime(message.createdAtUtc)}{message.editedAtUtc && !message.isDeleted ? ' · edited' : ''}</small>
+                    {message.isDeleted ? (
+                      <p className="max-w-[85%] rounded-lg border border-dashed border-border px-3 py-2 text-sm italic text-muted-foreground">This message was deleted.</p>
+                    ) : editingId === message.id ? (
+                      <div className="flex w-full max-w-[85%] flex-col gap-2">
+                        <Textarea aria-label="Edit message" rows={2} maxLength={5000} value={editText} onChange={(e) => setEditText(e.target.value)} />
+                        <div className="flex gap-2">
+                          <Button size="sm" disabled={busy} onClick={() => void saveEdit(message)}>Save</Button>
+                          <Button size="sm" variant="outline" disabled={busy} onClick={() => setEditingId(null)}>Cancel</Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className={cn('flex max-w-[85%] flex-col gap-1 rounded-lg px-3 py-2 text-sm', message.isMine ? 'bg-primary/15 text-foreground' : 'bg-muted')}>
+                        {message.body ? <p className="whitespace-pre-wrap">{message.body}</p> : null}
+                        {message.attachment ? (
+                          <button type="button" className="flex items-center gap-1.5 self-start text-left underline" aria-label={`Download ${message.attachment.fileName}`} onClick={() => void downloadAttachment(message)}>
+                            <Paperclip className="h-3.5 w-3.5 shrink-0" aria-hidden />{message.attachment.fileName} <span className="text-xs text-muted-foreground no-underline">({formatBytes(message.attachment.sizeBytes)})</span>
+                          </button>
+                        ) : null}
+                      </div>
+                    )}
+                    {!message.isDeleted && editingId !== message.id && canSend && (message.isMine || (canModerate && selected.kind === 'Course')) ? (
+                      <span className="flex gap-3 text-xs text-muted-foreground">
+                        {message.isMine ? <button type="button" className="hover:underline" aria-label={`Edit message: ${message.body.slice(0, 30) || message.attachment?.fileName || ''}`} onClick={() => startEdit(message)}>Edit</button> : null}
+                        <button type="button" className="hover:underline" aria-label={`Delete message: ${message.body.slice(0, 30) || message.attachment?.fileName || ''}`} onClick={() => void removeMessage(message)}>Delete</button>
+                      </span>
+                    ) : null}
                   </div>
                 ))}
                 <div ref={endRef} />
               </div>
+              {file ? (
+                <div className="flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm" role="status">
+                  <Paperclip className="h-4 w-4 shrink-0" aria-hidden /><span className="truncate">{file.name} ({formatBytes(file.size)})</span>
+                  <Button type="button" variant="outline" size="icon" className="ml-auto h-6 w-6" aria-label="Remove the attached file" onClick={clearFile}><X className="h-3.5 w-3.5" aria-hidden /></Button>
+                </div>
+              ) : null}
               {canSend ? (
                 <form className="flex items-end gap-2" onSubmit={(event) => { event.preventDefault(); void send() }}>
                   <div className="flex flex-1 flex-col gap-1.5">
@@ -199,7 +286,11 @@ export default function MessagesPage() {
                       onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() } }}
                     />
                   </div>
-                  <Button type="submit" disabled={busy || !draft.trim()}>Send</Button>
+                  <div className="flex shrink-0 flex-col items-stretch gap-2">
+                    <input ref={fileRef} type="file" className="sr-only" aria-label="Attach a file" onChange={(e) => chooseFile(e.target.files?.[0])} />
+                    <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => fileRef.current?.click()}><Paperclip className="mr-1 h-4 w-4" aria-hidden />Attach</Button>
+                    <Button type="submit" disabled={busy || (!draft.trim() && !file)}>Send</Button>
+                  </div>
                 </form>
               ) : <p className="text-sm text-muted-foreground">You can read messages but not send them.</p>}
             </CardContent>

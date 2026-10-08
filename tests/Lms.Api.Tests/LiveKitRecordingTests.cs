@@ -35,6 +35,28 @@ public sealed class FakeEgressClient : ILiveKitEgressClient
         return Task.FromResult(id);
     }
 
+    public sealed record TrackStart(string Room, string Identity, EgressDestination Destination, string Id);
+    public List<TrackStart> TrackStarts { get; } = [];
+
+    public Task<string> StartParticipantRecordingAsync(LiveKitCredentials credentials, string room, string identity, EgressDestination destination, CancellationToken cancellationToken)
+    {
+        if (StartError is not null) throw new LiveKitEgressException(StartError);
+        var id = $"EGP_{TrackStarts.Count + 1}";
+        TrackStarts.Add(new TrackStart(room, identity, destination, id));
+        infos[id] = new EgressInfo(id, "EGRESS_ACTIVE", null, []);
+        return Task.FromResult(id);
+    }
+
+    /// <summary>One person's recording finishes, like <see cref="CompleteAsync"/>.</summary>
+    public async Task CompleteTrackAsync(string id, byte[] content, double seconds = 60)
+    {
+        var start = TrackStarts.Single(item => item.Id == id);
+        var name = Path.GetFileName(start.Destination.FilePath);
+        if (start.Destination.S3 is null) await File.WriteAllBytesAsync(Path.Combine(LocalDirectory!, name), content);
+        else await PutObject!(start.Destination.FilePath, content);
+        infos[id] = new EgressInfo(id, "EGRESS_COMPLETE", null, [new EgressFile(name, start.Destination.FilePath, content.Length, (long)(seconds * 1e9))]);
+    }
+
     public Task StopAsync(LiveKitCredentials credentials, string egressId, CancellationToken cancellationToken)
     {
         Stops.Add(egressId);

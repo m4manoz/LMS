@@ -28,6 +28,7 @@ type Session = {
   endAtUtc: string;
   status: string;
   requireApproval?: boolean;
+  autoRecord?: boolean;
 };
 type JoinRequest = { userId: string; userName: string; status: string; requestedAtUtc: string };
 type Announcement = {
@@ -77,6 +78,7 @@ type Recording = {
 };
 
 /** What each Classroom menu item is about. The same classes are behind all of them, but each shows its own page and opens just its own part of a class. */
+type TrackRecording = { id: string; userId: string; displayName: string; status: string; durationSeconds: number | null; sizeBytes: number; lastError: string | null; downloadUrl: string | null };
 type HandRaise = { id: string; userId: string; userName: string; status: string; raisedAtUtc: string };
 
 export const classroomViews = {
@@ -117,6 +119,9 @@ export default function LiveClassesPage({ initialView = "sessions", initialTab =
   const [courseId, setCourseId] = useState("");
   const [meetingUrl, setMeetingUrl] = useState("");
   const [waitingRoom, setWaitingRoom] = useState(true);
+  const [autoRecord, setAutoRecord] = useState(false);
+  /** Each person's own recording of a class held in LiveKit (when the server is set up for it). */
+  const [tracks, setTracks] = useState<TrackRecording[]>([]);
   /** The learner has asked to come in and is waiting for the host. */
   const [waiting, setWaiting] = useState(false);
   const [requests, setRequests] = useState<JoinRequest[]>([]);
@@ -330,6 +335,7 @@ export default function LiveClassesPage({ initialView = "sessions", initialTab =
           startAtUtc: startDate.toISOString(),
           endAtUtc: endDate.toISOString(),
           requireApproval: waitingRoom,
+          ...(autoRecord && courseId && providerInfo?.provider.toLowerCase() === "livekit" ? { autoRecord: true } : {}),
           ...(providerInfo?.requiresMeetingLink ? { meetingUrl: meetingUrl.trim() } : {}),
         }),
       });
@@ -629,6 +635,25 @@ export default function LiveClassesPage({ initialView = "sessions", initialTab =
     } catch (exception) { setError(readError(exception, "Unable to let everyone in.")); }
   }
   const isLiveKit = (selected?.provider ?? "").toLowerCase() === "livekit";
+  /** The host switches off one person's microphone (or everyone's but their own). People can switch theirs back on. */
+  async function muteInRoom(userId: string | null) {
+    if (!selected) return;
+    setError(null);
+    try {
+      const result = await apiRequest<{ muted: number }>(`/api/v1/tenant/live-classes/sessions/${selected.id}/${userId ? `mute/${userId}` : "mute-all"}`, { method: "POST" });
+      setNotice(result.muted === 0 ? "Nobody had a microphone on." : result.muted === 1 ? "1 microphone switched off." : `${result.muted} microphones switched off.`);
+    } catch (exception) {
+      setError(readError(exception, "Unable to switch microphones off."));
+    }
+  }
+  const tracksWanted = canManage && isLiveKit && !!selected && recording !== null;
+  const recordingState = recording?.status;
+  useEffect(() => {
+    if (!tracksWanted || !selected) { setTracks([]); return; }
+    let current = true;
+    apiRequest<TrackRecording[]>(`/api/v1/tenant/live-classes/sessions/${selected.id}/recording/tracks`).then((list) => { if (current && Array.isArray(list)) setTracks(list); }).catch(() => { if (current) setTracks([]); });
+    return () => { current = false; };
+  }, [tracksWanted, selected?.id, recordingState]);
   // A recording being made or saved finishes by itself: check back until it does.
   const recordingBusy = isLiveKit && (recording?.status === "Recording" || recording?.status === "Processing");
   useEffect(() => {
@@ -710,6 +735,14 @@ export default function LiveClassesPage({ initialView = "sessions", initialTab =
               <span><strong className="block">Learners wait to be let in</strong><span className="text-muted-foreground">Learners ask to join and you let them in (one by one, or all at once). Turn it off to let enrolled learners straight in.</span></span>
             </label>
           </FormSection>
+          {providerInfo?.provider.toLowerCase() === "livekit" ? (
+            <FormSection title="Recording">
+              <label className="flex items-start gap-2 text-sm">
+                <input type="checkbox" className="mt-1" checked={autoRecord && !!courseId} disabled={!courseId} onChange={(e) => setAutoRecord(e.target.checked)} />
+                <span><strong className="block">Record this class automatically</strong><span className="text-muted-foreground">{courseId ? "Recording starts when the first person is in the room and stops when the class ends. Choosing this is your agreement to the class being recorded." : "Choose a course first: the recording is saved in its video library."}</span></span>
+              </label>
+            </FormSection>
+          ) : null}
           <FormSection title="When">
             <div className="grid gap-3 sm:grid-cols-2">
               <Field id="live-start" label="Starts" required><Input id="live-start" type="datetime-local" value={start} onChange={(e) => setStart(e.target.value)} /></Field>
@@ -729,7 +762,7 @@ export default function LiveClassesPage({ initialView = "sessions", initialTab =
             <NoticeBanner message={notice} />
             {room ? (
               <Suspense fallback={<p className="text-sm text-muted-foreground">Loading the class room…</p>}>
-                <LiveClassRoom join={room} raised={hands.map((item) => item.userId)} displayName={session?.user.displayName ?? "You"} onLeave={() => { setRoom(null); void leave(); }} />
+                <LiveClassRoom join={room} raised={hands.map((item) => item.userId)} onMute={canManage ? muteInRoom : undefined} displayName={session?.user.displayName ?? "You"} onLeave={() => { setRoom(null); void leave(); }} />
               </Suspense>
             ) : null}
             {requests.length > 0 ? (
@@ -769,7 +802,7 @@ export default function LiveClassesPage({ initialView = "sessions", initialTab =
               </section>
             ) : null}
             </div>
-            <div className={inCall ? "min-w-0 lg:sticky lg:top-0 lg:max-h-[calc(100vh-9rem)] lg:self-start lg:overflow-y-auto" : "contents"}>
+            <div className={inCall ? "min-w-0 lg:self-start" : "contents"}>
             <Tabs value={sessionTab} onValueChange={setSessionTab}>
               {focused ? null : <TabsList>
                 <TabsTrigger value="overview">Overview</TabsTrigger>
@@ -944,11 +977,29 @@ export default function LiveClassesPage({ initialView = "sessions", initialTab =
                 </div>
                 {isLiveKit ? (
                   <div className="flex flex-col gap-1 text-sm" data-testid="live-recording-state">
+                    {selected.autoRecord ? <p className="text-muted-foreground">This class records itself: recording starts when the first person is in the room and stops when the class ends.</p> : null}
                     {recording?.status === "Recording" ? <p role="status" className="font-medium text-destructive">Recording now. Everyone in the class room is told. Stop it when the class is over.</p> : null}
                     {recording?.status === "Processing" ? <p role="status" className="text-muted-foreground">The recording has stopped and is being saved to the video library…</p> : null}
                     {recording?.status === "Available" && recording.videoId ? <p className="text-muted-foreground">Saved to the video library as a class recording. Enrolled learners can watch it once it is ready; it also gets streaming pieces and can be transcribed.</p> : null}
                     {!recording || recording.status === "Failed" ? <p className="text-muted-foreground">Recording saves everyone's video and sound as one video in the library. The host must have given consent first, and the class must be linked to a course.</p> : null}
                   </div>
+                ) : null}
+                {tracks.length > 0 ? (
+                  <section aria-label="Recordings of each person" className="flex flex-col gap-1.5 rounded-md border border-border p-3 text-sm">
+                    <strong>Each person on their own</strong>
+                    <ul className="flex flex-col gap-1">
+                      {tracks.map((item) => (
+                        <li key={item.id} className="flex flex-wrap items-center justify-between gap-2">
+                          <span>{item.displayName}{item.durationSeconds ? <small className="ml-2 text-muted-foreground">{Math.floor(item.durationSeconds / 60)}:{String(item.durationSeconds % 60).padStart(2, "0")}</small> : null}</span>
+                          <span className="flex items-center gap-2">
+                            <Badge variant="outline">{item.status}</Badge>
+                            {item.downloadUrl ? <a className="text-primary hover:underline" href={item.downloadUrl} target="_blank" rel="noreferrer" aria-label={`Open the recording of ${item.displayName}`}>Open</a> : null}
+                            {item.lastError ? <small className="text-destructive">{item.lastError}</small> : null}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
                 ) : null}
                 {!recordsHere && !(isLiveKit && (recording?.status === "Recording" || recording?.status === "Processing" || (recording?.status === "Available" && recording.videoId))) ? (
                   <div className="flex flex-col gap-3 rounded-md border border-border p-3 text-sm">

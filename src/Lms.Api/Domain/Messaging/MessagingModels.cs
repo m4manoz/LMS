@@ -42,4 +42,12 @@ public sealed class ConversationMessage
     public Guid SenderUserId { get; set; }
     public string Body { get; set; } = string.Empty;
     public DateTimeOffset CreatedAtUtc { get; set; }
+    /// <summary>When the sender last changed the text; null if never.</summary>
+    public DateTimeOffset? EditedAtUtc { get; set; }
+    /// <summary>A deleted message stays in the conversation as a marker, with its text and file removed.</summary>
+    public DateTimeOffset? DeletedAtUtc { get; set; }
+    public string? AttachmentKey { get; set; }
+    public string? AttachmentName { get; set; }
+    public string? AttachmentContentType { get; set; }
+    public long? AttachmentSizeBytes { get; set; }
 }

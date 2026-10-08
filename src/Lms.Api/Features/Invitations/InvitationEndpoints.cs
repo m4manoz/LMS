@@ -165,8 +165,11 @@ public static class InvitationEndpoints
         if (invitation is null || course is null) return Results.NotFound(new { message = InvalidMessage });
         var tenant = await db.Tenants.AsNoTracking().SingleAsync(item => item.Id == invitation.TenantId, cancellationToken);
         var inviter = await db.Users.AsNoTracking().Where(item => item.Id == invitation.InvitedByUserId).Select(item => item.DisplayName).SingleOrDefaultAsync(cancellationToken);
-        var hasAccount = await db.Users.AsNoTracking().AnyAsync(item => item.NormalizedEmail == invitation.Email.ToUpperInvariant(), cancellationToken);
-        return Results.Ok(new InvitationPreview(tenant.Name, tenant.Slug, course.Title, invitation.Email, inviter ?? "A teacher", invitation.Message, invitation.ExpiresAtUtc, hasAccount));
+        var existing = await db.Users.AsNoTracking().Where(item => item.NormalizedEmail == invitation.Email.ToUpperInvariant()).Select(item => item.Id).SingleOrDefaultAsync(cancellationToken);
+        var hasAccount = existing != Guid.Empty;
+        // An account can exist because the person belongs to another organization; they then join this one with that account's password.
+        var isMember = hasAccount && await db.TenantMemberships.AsNoTracking().AnyAsync(item => item.UserId == existing, cancellationToken);
+        return Results.Ok(new InvitationPreview(tenant.Name, tenant.Slug, course.Title, invitation.Email, inviter ?? "A teacher", invitation.Message, invitation.ExpiresAtUtc, hasAccount, isMember));
     }
 
     private static async Task<IResult> RegisterAsync(RegisterRequest request, ITenantContext tenantContext, LmsDbContext db, PasswordService passwords, InvitationService invitations, CancellationToken cancellationToken)
@@ -176,15 +179,16 @@ public static class InvitationEndpoints
         var course = invitation is null ? null : await db.Courses.SingleOrDefaultAsync(item => item.Id == invitation.CourseId && item.Status == CourseStatus.Published, cancellationToken);
         if (invitation is null || course is null) return Results.NotFound(new { message = InvalidMessage });
 
+        // The address is the invited one, never something the caller supplies.
+        var normalized = invitation.Email.ToUpperInvariant();
+        var existingUser = await db.Users.SingleOrDefaultAsync(item => item.NormalizedEmail == normalized, cancellationToken);
+        if (existingUser is not null) return await JoinWithExistingAccountAsync(existingUser, request.Password, tenantId, invitation, course, passwords, invitations, db, cancellationToken);
+
         var name = request.DisplayName?.Trim();
         if (string.IsNullOrEmpty(name) || name.Length > 200) return Results.ValidationProblem(new Dictionary<string, string[]> { ["displayName"] = ["Enter your name (200 characters or fewer)."] });
         try { PasswordService.Validate(request.Password ?? string.Empty); }
         catch (ArgumentException exception) { return Results.ValidationProblem(new Dictionary<string, string[]> { ["password"] = [exception.Message] }); }
 
-        // The address is the invited one, never something the caller supplies.
-        var normalized = invitation.Email.ToUpperInvariant();
-        if (await db.Users.AnyAsync(item => item.NormalizedEmail == normalized, cancellationToken))
-            return Results.Conflict(new { message = "An account already exists for this email address. Sign in to accept the invitation.", accountExists = true });
         var role = await db.Roles.SingleOrDefaultAsync(item => item.Code == "LEARNER", cancellationToken);
         if (role is null) return Results.Conflict(new { message = "This organization cannot accept sign-ups right now." });
 
@@ -202,6 +206,29 @@ public static class InvitationEndpoints
 
         var (result, accepted) = await invitations.AcceptAsync(db, tenantId, invitation, course, user.Id, cancellationToken);
         // The account exists either way. If a prerequisite is missing the invitation stays open for after they have finished it.
+        return Results.Created($"/api/v1/tenant/users/{user.Id:D}", new RegisteredViaInvitation(user.Email, course.Id, course.Title, accepted ? result.Outcome.ToString() : "NotEnrolled", accepted ? null : result.Message));
+    }
+
+    /// <summary>
+    /// The address already has an account, because the person belongs to another organization. Knowing that account's password proves it is theirs
+    /// (the code alone might have been passed along), and they become a learner here and are enrolled. A member already, they just sign in.
+    /// </summary>
+    private static async Task<IResult> JoinWithExistingAccountAsync(AppUser user, string? password, Guid tenantId, CourseInvitation invitation, Course course, PasswordService passwords, InvitationService invitations, LmsDbContext db, CancellationToken cancellationToken)
+    {
+        if (await db.TenantMemberships.AnyAsync(item => item.UserId == user.Id, cancellationToken))
+            return Results.Conflict(new { message = "An account already exists for this email address. Sign in to accept the invitation.", accountExists = true });
+        if (user.Status != UserStatus.Active || !passwords.Verify(password ?? string.Empty, user.PasswordHash))
+            return Results.BadRequest(new { message = "That is not the password of the existing account for this email address.", needsExistingPassword = true });
+        var role = await db.Roles.SingleOrDefaultAsync(item => item.Code == "LEARNER", cancellationToken);
+        if (role is null) return Results.Conflict(new { message = "This organization cannot accept sign-ups right now." });
+
+        var now = DateTimeOffset.UtcNow;
+        db.TenantMemberships.Add(new TenantMembership { Id = Guid.NewGuid(), TenantId = tenantId, UserId = user.Id, RoleId = role.Id, Status = MembershipStatus.Active, CreatedAtUtc = now, UpdatedAtUtc = now });
+        if (!await db.LearnerProfiles.AnyAsync(item => item.UserId == user.Id, cancellationToken))
+            db.LearnerProfiles.Add(new LearnerProfile { Id = Guid.NewGuid(), TenantId = tenantId, UserId = user.Id, CreatedAtUtc = now, UpdatedAtUtc = now });
+        await db.SaveChangesAsync(cancellationToken);
+
+        var (result, accepted) = await invitations.AcceptAsync(db, tenantId, invitation, course, user.Id, cancellationToken);
         return Results.Created($"/api/v1/tenant/users/{user.Id:D}", new RegisteredViaInvitation(user.Email, course.Id, course.Title, accepted ? result.Outcome.ToString() : "NotEnrolled", accepted ? null : result.Message));
     }
 
@@ -239,7 +266,7 @@ public sealed record AcceptTokenRequest(string? Token);
 public sealed record CreatedInvitation(Guid Id, string Token, DateTimeOffset ExpiresAtUtc, string? Link, bool HasAccount, string EmailStatus, string? EmailError);
 public sealed record LookupRequest(string? Token);
 public sealed record RegisterRequest(string? Token, string? DisplayName, string? Password);
-public sealed record InvitationPreview(string OrganizationName, string TenantSlug, string CourseTitle, string Email, string InvitedBy, string? Message, DateTimeOffset ExpiresAtUtc, bool HasAccount);
+public sealed record InvitationPreview(string OrganizationName, string TenantSlug, string CourseTitle, string Email, string InvitedBy, string? Message, DateTimeOffset ExpiresAtUtc, bool HasAccount, bool IsMember = false);
 public sealed record RegisteredViaInvitation(string Email, Guid CourseId, string CourseTitle, string Outcome, string? Message);
 public sealed record InvitationResponse(Guid Id, Guid CourseId, string CourseTitle, string Email, string Status, string InvitedBy, string? Message, DateTimeOffset CreatedAtUtc, DateTimeOffset ExpiresAtUtc, DateTimeOffset? RespondedAtUtc, string? EmailStatus = null);
 public sealed record MyInvitation(Guid Id, Guid CourseId, string CourseCode, string CourseTitle, string InvitedBy, string? Message, DateTimeOffset CreatedAtUtc, DateTimeOffset ExpiresAtUtc);

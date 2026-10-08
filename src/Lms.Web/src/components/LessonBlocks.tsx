@@ -1,12 +1,17 @@
 import { useEffect, useState } from 'react'
 import { Download } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import VideoPlayer from '@/components/VideoPlayer'
+import { ChapterList, VideoNotes } from '@/features/VideoStudyPanels'
 import { ApiError, apiRequest, downloadFile, fetchBlobUrl } from '@/lib/api'
+import type { VideoItem } from '@/lib/video'
 
 export type BlockFile = { fileName: string; contentType: string; sizeBytes: number; downloadPath: string }
 export type Block = {
   id: string; type: 'Text' | 'Code' | 'Link' | 'Embed' | 'Image' | 'Pdf' | 'Video' | 'Audio' | 'Download'; displayOrder: number
   title: string | null; text: string | null; language: string | null; url: string | null; caption: string | null; file: BlockFile | null
+  /** Set when the file is a video in the library, which then plays in the library's player. */
+  videoId?: string | null
 }
 
 /** Only these types are ever shown inline; anything else is offered as a download, never rendered. */
@@ -62,8 +67,37 @@ function BlockBody({ block }: { block: Block }) {
         </div>
       ) : null
     default:
+      if (block.type === 'Video' && block.videoId) return <LibraryVideo block={block} videoId={block.videoId} />
       return block.file ? <FileBlock block={block} file={block.file} /> : null
   }
+}
+
+/**
+ * A lesson's video that is also in the video library plays in the library's player: streaming, quality, speed, captions, resume,
+ * and the chapters and notes. Watching it is recorded, so a lesson can complete when its videos have been watched.
+ * If the library video cannot be read, the plain file is shown instead.
+ */
+function LibraryVideo({ block, videoId }: { block: Block; videoId: string }) {
+  const [video, setVideo] = useState<VideoItem | null>(null)
+  const [failed, setFailed] = useState(false)
+  const [time, setTime] = useState(0)
+  const [seek, setSeek] = useState<{ seconds: number; nonce: number } | null>(null)
+  useEffect(() => {
+    let active = true
+    setVideo(null); setFailed(false)
+    apiRequest<VideoItem>(`/api/v1/tenant/videos/${videoId}`).then((item) => { if (active) setVideo(item) }).catch(() => { if (active) setFailed(true) })
+    return () => { active = false }
+  }, [videoId])
+  if (failed) return block.file ? <FileBlock block={block} file={block.file} /> : null
+  if (!video) return <p className="text-sm text-muted-foreground">Loading the video…</p>
+  const jump = (seconds: number) => setSeek({ seconds, nonce: Date.now() + Math.random() })
+  return (
+    <div className="flex flex-col gap-3">
+      <VideoPlayer video={video} seek={seek} onTime={setTime} onSeekDone={() => setSeek(null)} onProgress={(next) => setVideo((current) => (current ? { ...current, myProgress: next } : current))} />
+      <ChapterList videoId={video.id} time={time} onSeek={jump} />
+      <VideoNotes videoId={video.id} time={time} onSeek={jump} />
+    </div>
+  )
 }
 
 function FileBlock({ block, file }: { block: Block; file: BlockFile }) {

@@ -12,99 +12,37 @@ import { EmptyState, ErrorBanner, Field, FormActions, FormLayout, FormSection, L
 import SidePanel from "@/components/SidePanel";
 import { ApiError, apiRequest } from "../lib/api";
 import { useAuth } from "../lib/auth";
-
-type Course = { id: string; code: string; title: string; status: string };
-type Assessment = {
-  id: string;
-  courseId: string;
-  title: string;
-  instructions?: string | null;
-  status: string;
-  timeLimitMinutes?: number | null;
-  attemptLimit: number;
-  questionCount: number;
-};
-type Question = {
-  id: string;
-  type: string;
-  prompt: string;
-  options: string[];
-  correctAnswers: string[];
-  displayOrder: number;
-  points: number;
-};
-type AssessmentDetail = { assessment: Assessment; questions: Question[] };
-type AttemptQuestion = {
-  id: string;
-  type: string;
-  prompt: string;
-  options: string[];
-  correctAnswers: string[];
-  displayOrder: number;
-  points: number;
-  answers: string[];
-  scorePoints: number;
-  isCorrect?: boolean | null;
-  feedback?: string | null;
-  text?: string | null;
-};
-type Attempt = {
-  attempt: {
-    id: string;
-    learnerUserId: string;
-    attemptNumber: number;
-    status: string;
-    scorePoints: number;
-    possiblePoints: number;
-    percentage?: number | null;
-  };
-  assessmentTitle: string;
-  instructions?: string | null;
-  questions: AttemptQuestion[];
-  teacherFeedback?: string | null;
-};
-type AttemptSummary = {
-  id: string;
-  learnerUserId: string;
-  attemptNumber: number;
-  status: string;
-  scorePoints: number;
-  possiblePoints: number;
-  percentage?: number | null;
-};
-
-const choiceTypes = ["MultipleChoice", "MultipleResponse", "TrueFalse"];
+import { availability, fromLocalInput, type Assessment, type AssessmentDetail, type Attempt, type Course } from "../lib/assessments";
+import AssessmentAccommodationsPanel from "./AssessmentAccommodationsPanel";
+import AssessmentAttemptPanel from "./AssessmentAttemptPanel";
+import AssessmentGradingPanel from "./AssessmentGradingPanel";
+import AssessmentQuestionsPanel from "./AssessmentQuestionsPanel";
+import AssessmentRubricsPanel from "./AssessmentRubricsPanel";
 
 export default function AssessmentsPage({ initialTab = "overview" }: { initialTab?: "overview" | "questions" | "grading" }) {
   const { session } = useAuth();
   const [courses, setCourses] = useState<Course[]>([]);
   const [courseId, setCourseId] = useState("");
   const [assessments, setAssessments] = useState<Assessment[]>([]);
-  const [selectedAssessment, setSelectedAssessment] =
-    useState<AssessmentDetail | null>(null);
+  const [selectedAssessment, setSelectedAssessment] = useState<AssessmentDetail | null>(null);
   const [creating, setCreating] = useState(false);
   const [attempt, setAttempt] = useState<Attempt | null>(null);
-  const [attempts, setAttempts] = useState<AttemptSummary[]>([]);
-  const [answers, setAnswers] = useState<Record<string, string>>({});
   const [title, setTitle] = useState("");
   const [instructions, setInstructions] = useState("");
   const [timeLimitMinutes, setTimeLimitMinutes] = useState("");
   const [attemptLimit, setAttemptLimit] = useState("1");
-  const [questionType, setQuestionType] = useState("MultipleChoice");
-  const [prompt, setPrompt] = useState("");
-  const [options, setOptions] = useState("");
-  const [correctAnswers, setCorrectAnswers] = useState("");
-  const [points, setPoints] = useState("1");
-  const [gradeScore, setGradeScore] = useState("");
-  const [gradeFeedback, setGradeFeedback] = useState("");
+  const [shuffleQuestions, setShuffleQuestions] = useState(false);
+  const [shuffleOptions, setShuffleOptions] = useState(false);
+  const [opensAt, setOpensAt] = useState("");
+  const [dueAt, setDueAt] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState<string>(initialTab);
+  const [area, setArea] = useState("assessments");
   const canManage = session?.permissions.includes("assessment.manage") ?? false;
-  const canAttempt =
-    session?.permissions.includes("assessment.attempt") ?? false;
+  const canAttempt = session?.permissions.includes("assessment.attempt") ?? false;
   const canGrade = session?.permissions.includes("grade.manage") ?? false;
 
   useEffect(() => {
@@ -117,9 +55,7 @@ export default function AssessmentsPage({ initialTab = "overview" }: { initialTa
   async function loadCourses() {
     try {
       const result = await apiRequest<Course[]>("/api/v1/tenant/courses");
-      const published = result.filter(
-        (course) => course.status === "Published",
-      );
+      const published = result.filter((course) => course.status === "Published");
       setCourses(published);
       if (!courseId && published.length > 0) setCourseId(published[0].id);
     } catch (exception) {
@@ -130,11 +66,7 @@ export default function AssessmentsPage({ initialTab = "overview" }: { initialTa
   async function loadAssessments(nextCourseId: string) {
     try {
       setError(null);
-      setAssessments(
-        await apiRequest<Assessment[]>(
-          `/api/v1/tenant/courses/${nextCourseId}/assessments`,
-        ),
-      );
+      setAssessments(await apiRequest<Assessment[]>(`/api/v1/tenant/courses/${nextCourseId}/assessments`));
     } catch (exception) {
       setError(readError(exception, "Unable to load assessments."));
     }
@@ -144,22 +76,21 @@ export default function AssessmentsPage({ initialTab = "overview" }: { initialTa
     setBusy(true);
     setError(null);
     try {
-      const detail = await apiRequest<AssessmentDetail>(
-        `/api/v1/tenant/assessments/${assessmentId}`,
-      );
+      const detail = await apiRequest<AssessmentDetail>(`/api/v1/tenant/assessments/${assessmentId}`);
       setSelectedAssessment(detail);
       setAttempt(null);
-      if (canGrade)
-        setAttempts(
-          await apiRequest<AttemptSummary[]>(
-            `/api/v1/tenant/assessments/${assessmentId}/attempts`,
-          ),
-        );
     } catch (exception) {
       setError(readError(exception, "Unable to open assessment."));
     } finally {
       setBusy(false);
     }
+  }
+
+  /** After the author changes something: show the assessment as it is now, and refresh the list's counts. */
+  async function reloadSelected() {
+    if (!selectedAssessment) return;
+    await openAssessment(selectedAssessment.assessment.id);
+    await loadAssessments(courseId);
   }
 
   function closePanel() {
@@ -199,6 +130,9 @@ export default function AssessmentsPage({ initialTab = "overview" }: { initialTa
     const attemptsAllowed = Number(attemptLimit);
     if (!attemptLimit.trim() || !Number.isInteger(attemptsAllowed) || attemptsAllowed < 1 || attemptsAllowed > 20)
       return setFormError("Attempts allowed must be a whole number from 1 to 20.");
+    const opens = fromLocalInput(opensAt);
+    const due = fromLocalInput(dueAt);
+    if (opens && due && new Date(due) <= new Date(opens)) return setFormError("The deadline must be after the opening time.");
     setBusy(true);
     setError(null);
     setFormError(null);
@@ -210,11 +144,19 @@ export default function AssessmentsPage({ initialTab = "overview" }: { initialTa
           instructions,
           timeLimitMinutes: timeLimitMinutes ? Number(timeLimitMinutes) : null,
           attemptLimit: Number(attemptLimit),
+          ...(shuffleQuestions ? { shuffleQuestions: true } : {}),
+          ...(shuffleOptions ? { shuffleOptions: true } : {}),
+          ...(opens ? { opensAtUtc: opens } : {}),
+          ...(due ? { dueAtUtc: due } : {}),
         }),
       });
       setTitle("");
       setInstructions("");
       setTimeLimitMinutes("");
+      setShuffleQuestions(false);
+      setShuffleOptions(false);
+      setOpensAt("");
+      setDueAt("");
       await loadAssessments(courseId);
       setCreating(false);
       setNotice("Draft assessment created. Open it to add questions.");
@@ -225,93 +167,12 @@ export default function AssessmentsPage({ initialTab = "overview" }: { initialTa
     }
   }
 
-  async function addQuestion(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!selectedAssessment) return;
-    // Client-side validation
-    const trimmedPrompt = (prompt ?? "").trim();
-    const parsedOptions = splitCsv(options);
-    const parsedCorrect = splitCsv(correctAnswers);
-    const pts = Number(points);
-    if (!trimmedPrompt) return setFormError("Question prompt is required.");
-    if (choiceTypes.includes(questionType) && parsedOptions.length < 2)
-      return setFormError(
-        "At least two options are required for choice questions.",
-      );
-    if (choiceTypes.includes(questionType) && parsedCorrect.length === 0)
-      return setFormError(
-        "Please indicate the correct answer(s) for choice questions.",
-      );
-    if (!Number.isFinite(pts) || pts <= 0)
-      return setFormError("Points must be a positive number.");
-    setBusy(true);
-    setError(null);
-    setFormError(null);
-    try {
-      await apiRequest(
-        `/api/v1/tenant/assessments/${selectedAssessment.assessment.id}/questions`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            type: questionType,
-            prompt: trimmedPrompt,
-            options: parsedOptions,
-            correctAnswers: parsedCorrect,
-            points: pts,
-          }),
-        },
-      );
-      setPrompt("");
-      setOptions("");
-      setCorrectAnswers("");
-      setPoints("1");
-      await openAssessment(selectedAssessment.assessment.id);
-      await loadAssessments(courseId);
-    } catch (exception) {
-      setError(readError(exception, "Unable to add question."));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function publishAssessment() {
-    if (!selectedAssessment) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await apiRequest(
-        `/api/v1/tenant/assessments/${selectedAssessment.assessment.id}/publish`,
-        { method: "POST" },
-      );
-      await openAssessment(selectedAssessment.assessment.id);
-      await loadAssessments(courseId);
-    } catch (exception) {
-      setError(readError(exception, "Unable to publish assessment."));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function startAttempt() {
     if (!selectedAssessment) return;
     setBusy(true);
     setError(null);
     try {
-      const next = await apiRequest<Attempt>(
-        `/api/v1/tenant/assessments/${selectedAssessment.assessment.id}/attempts`,
-        { method: "POST" },
-      );
-      setAttempt(next);
-      setAnswers(
-        Object.fromEntries(
-          next.questions.map((question) => [
-            question.id,
-            question.type === "Essay"
-              ? question.text || ""
-              : question.answers.join(", "),
-          ]),
-        ),
-      );
+      setAttempt(await apiRequest<Attempt>(`/api/v1/tenant/assessments/${selectedAssessment.assessment.id}/attempts`, { method: "POST" }));
     } catch (exception) {
       setError(readError(exception, "Unable to start attempt."));
     } finally {
@@ -319,235 +180,98 @@ export default function AssessmentsPage({ initialTab = "overview" }: { initialTa
     }
   }
 
-  async function submitAttempt() {
-    if (!attempt) return;
-    setBusy(true);
-    setError(null);
-    try {
-      for (const question of attempt.questions) {
-        const value = answers[question.id] || "";
-        await apiRequest(
-          `/api/v1/tenant/assessment-attempts/${attempt.attempt.id}/answers/${question.id}`,
-          {
-            method: "PUT",
-            body: JSON.stringify({
-              answers:
-                question.type === "Essay" || question.type === "ShortAnswer"
-                  ? []
-                  : splitCsv(value),
-              text:
-                question.type === "Essay" || question.type === "ShortAnswer"
-                  ? value
-                  : null,
-            }),
-          },
-        );
-      }
-      const result = await apiRequest<Attempt>(
-        `/api/v1/tenant/assessment-attempts/${attempt.attempt.id}/submit`,
-        { method: "POST" },
-      );
-      setAttempt(result);
-    } catch (exception) {
-      setError(readError(exception, "Unable to submit attempt."));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function gradeAttempt(item: AttemptSummary) {
-    const score = Number(gradeScore);
-    if (!gradeScore.trim() || !Number.isFinite(score) || score < 0 || score > item.possiblePoints)
-      return setError(`Score must be a number from 0 to ${item.possiblePoints}.`);
-    setBusy(true);
-    setError(null);
-    try {
-      await apiRequest(
-        `/api/v1/tenant/assessment-attempts/${item.id}/grade`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            scorePoints: Number(gradeScore),
-            feedback: gradeFeedback,
-          }),
-        },
-      );
-      if (selectedAssessment)
-        setAttempts(
-          await apiRequest<AttemptSummary[]>(
-            `/api/v1/tenant/assessments/${selectedAssessment.assessment.id}/attempts`,
-          ),
-        );
-      setGradeScore("");
-      setGradeFeedback("");
-    } catch (exception) {
-      setError(readError(exception, "Unable to grade attempt."));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   const selectedCourse = courses.find((course) => course.id === courseId);
-  const effectiveTab =
-    (tab === "grading" && !canGrade) || (tab === "questions" && !canManage) ? "overview" : tab;
+  const effectiveTab = (tab === "grading" && !canGrade) || (tab === "questions" && !canManage) ? "overview" : tab;
   const showTabs = canManage || canGrade;
   const detail = selectedAssessment;
-  const isChoice = choiceTypes.includes(questionType);
 
+  const minutes = detail ? (detail.effectiveTimeLimitMinutes ?? detail.assessment.timeLimitMinutes) : null;
+  const attemptsAllowed = detail ? (detail.effectiveAttemptLimit ?? detail.assessment.attemptLimit) : 0;
+  const attemptsLeft = detail?.attemptsUsed != null ? attemptsAllowed - detail.attemptsUsed : null;
+  const when = detail ? availability(detail.assessment) : "open";
   const overviewView = !detail ? null : attempt ? (
-    <AttemptPanel attempt={attempt} answers={answers} setAnswers={setAnswers} busy={busy} canAttempt={canAttempt} onSubmit={() => void submitAttempt()} />
+    <AssessmentAttemptPanel key={attempt.attempt.id} attempt={attempt} canAttempt={canAttempt} onChange={setAttempt} />
   ) : (
     <Card>
       <CardHeader>
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="text-xs text-muted-foreground">
-              {detail.questions.length} questions
-              {detail.assessment.timeLimitMinutes ? ` · ${detail.assessment.timeLimitMinutes} min` : ""}
-              {` · ${detail.assessment.attemptLimit} attempt${detail.assessment.attemptLimit === 1 ? "" : "s"}`}
+              {detail.assessment.questionCount} question{detail.assessment.questionCount === 1 ? "" : "s"}
+              {minutes ? ` · ${minutes} min` : ""}
+              {` · ${attemptsAllowed} attempt${attemptsAllowed === 1 ? "" : "s"}`}
             </p>
             <CardTitle className="text-xl">{detail.assessment.title}</CardTitle>
           </div>
           <Badge>{detail.assessment.status}</Badge>
         </div>
-        <CardDescription>
-          {detail.assessment.instructions || "Complete this assessment and submit your answers for grading."}
-        </CardDescription>
-      </CardHeader>
-      {detail.assessment.status === "Published" && canAttempt ? (
-        <CardContent>
-          <Button disabled={busy} onClick={() => void startAttempt()}>
-            Start attempt
-          </Button>
-        </CardContent>
-      ) : null}
-    </Card>
-  );
-
-  const questionsView = !detail ? null : (
-    <div className="flex flex-col gap-4">
-      <Card>
-        <CardHeader>
-          <div className="flex items-start justify-between gap-3">
-            <CardTitle>{detail.assessment.title}</CardTitle>
-            <Badge>{detail.assessment.status}</Badge>
-          </div>
-          <CardDescription>
-            {detail.questions.length} question{detail.questions.length === 1 ? "" : "s"}. Publish the assessment once it is complete.
-          </CardDescription>
-        </CardHeader>
-        {detail.assessment.status === "Draft" ? (
-          <CardContent>
-            <Button disabled={busy || detail.questions.length === 0} onClick={() => void publishAssessment()}>
-              Publish assessment
-            </Button>
-          </CardContent>
-        ) : null}
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle>Questions</CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          {detail.questions.length === 0 ? (
-            <EmptyState>Add questions before publishing.</EmptyState>
-          ) : (
-            detail.questions.map((question) => (
-              <div key={question.id} className="rounded-md border border-border p-3 text-sm">
-                <div className="mb-1 flex items-center justify-between text-xs text-muted-foreground">
-                  <span>Question {question.displayOrder}</span>
-                  <span>
-                    {question.type} · {question.points} point{question.points === 1 ? "" : "s"}
-                  </span>
-                </div>
-                <strong>{question.prompt}</strong>
-                {question.options.length > 0 ? <p className="text-muted-foreground">Options: {question.options.join(" · ")}</p> : null}
-                {question.correctAnswers.length > 0 ? <small className="text-primary">Correct: {question.correctAnswers.join(", ")}</small> : null}
-              </div>
-            ))
-          )}
-        </CardContent>
-      </Card>
-      {detail.assessment.status === "Draft" ? (
-        <Card>
-          <CardHeader>
-            <CardTitle>Add question</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <FormLayout onSubmit={addQuestion}>
-              <ErrorBanner message={formError} />
-              <FormSection title="Question">
-                <Field id="question-type" label="Type" required>
-                  <Select id="question-type" value={questionType} onChange={(e) => setQuestionType(e.target.value)}>
-                    <option>MultipleChoice</option>
-                    <option>MultipleResponse</option>
-                    <option>TrueFalse</option>
-                    <option>ShortAnswer</option>
-                    <option>Essay</option>
-                    <option>FileUpload</option>
-                  </Select>
-                </Field>
-                <Field id="question-prompt" label="Prompt" required>
-                  <Textarea id="question-prompt" value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={3} placeholder="Question prompt" />
-                </Field>
-                <Field id="question-points" label="Points" required className="max-w-xs">
-                  <Input id="question-points" value={points} onChange={(e) => setPoints(e.target.value)} type="number" min="1" max="100" />
-                </Field>
-              </FormSection>
-              <FormSection title="Answers" description="Needed for choice questions. Separate entries with commas.">
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <Field id="question-options" label="Options" required={isChoice}>
-                    <Input id="question-options" value={options} onChange={(e) => setOptions(e.target.value)} placeholder="Comma separated" />
-                  </Field>
-                  <Field id="question-correct" label="Correct answers" required={isChoice}>
-                    <Input id="question-correct" value={correctAnswers} onChange={(e) => setCorrectAnswers(e.target.value)} placeholder="Comma separated" />
-                  </Field>
-                </div>
-              </FormSection>
-              <FormActions busy={busy} busyLabel="Adding…" submitLabel="Add question" />
-            </FormLayout>
-          </CardContent>
-        </Card>
-      ) : null}
-    </div>
-  );
-
-  const gradingView = !detail ? null : (
-    <Card>
-      <CardHeader>
-        <CardTitle>Teacher review</CardTitle>
-        <CardDescription>Attempts for {detail.assessment.title}.</CardDescription>
+        <CardDescription>{detail.assessment.instructions || "Complete this assessment and submit your answers for grading."}</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
-        {attempts.length === 0 ? (
-          <EmptyState>No learner attempts yet.</EmptyState>
-        ) : (
-          attempts.map((item) => (
-            <div key={item.id} className="flex flex-col gap-2 rounded-md border border-border p-3 text-sm md:flex-row md:items-center md:justify-between">
-              <span>
-                <strong className="block">Attempt {item.attemptNumber}</strong>
-                <small className="text-muted-foreground">
-                  {item.status} · {item.scorePoints}/{item.possiblePoints}
-                  {item.percentage != null ? ` · ${item.percentage}%` : ""}
-                </small>
-              </span>
-              {item.status === "Submitted" ? (
-                <div className="flex flex-wrap gap-2">
-                  <Input className="w-24" aria-label="Score" value={gradeScore} onChange={(e) => setGradeScore(e.target.value)} type="number" min="0" max={item.possiblePoints} placeholder="Score" />
-                  <Input className="min-w-40 flex-1" aria-label="Feedback" value={gradeFeedback} onChange={(e) => setGradeFeedback(e.target.value)} placeholder="Feedback" />
-                  <Button variant="secondary" disabled={busy} onClick={() => void gradeAttempt(item)}>
-                    Grade
-                  </Button>
-                </div>
-              ) : null}
-            </div>
-          ))
-        )}
+        {detail.assessment.opensAtUtc || detail.assessment.dueAtUtc ? (
+          <p className="text-sm text-muted-foreground" role="status">
+            {when === "not-open" ? `Opens ${new Date(detail.assessment.opensAtUtc!).toLocaleString()}.` : when === "closed" ? `Closed ${new Date(detail.assessment.dueAtUtc!).toLocaleString()}.` : detail.assessment.dueAtUtc ? `Closes ${new Date(detail.assessment.dueAtUtc).toLocaleString()}.` : null}
+            {when === "not-open" && detail.assessment.dueAtUtc ? ` Closes ${new Date(detail.assessment.dueAtUtc).toLocaleString()}.` : null}
+          </p>
+        ) : null}
+        {detail.accommodation ? (
+          <p className="rounded-md bg-muted px-3 py-2 text-sm">
+            Your accommodation: {detail.accommodation.extraTimePercent > 0 ? `${detail.accommodation.extraTimePercent}% extra time` : ""}
+            {detail.accommodation.extraTimePercent > 0 && detail.accommodation.extraAttempts > 0 ? " and " : ""}
+            {detail.accommodation.extraAttempts > 0 ? `${detail.accommodation.extraAttempts} extra attempt${detail.accommodation.extraAttempts === 1 ? "" : "s"}` : ""}.
+          </p>
+        ) : null}
+        {detail.assessment.status === "Published" && canAttempt ? (
+          <div className="flex flex-wrap items-center gap-3">
+            <Button disabled={busy || when !== "open" || (attemptsLeft !== null && attemptsLeft <= 0)} onClick={() => void startAttempt()}>
+              Start attempt
+            </Button>
+            {attemptsLeft !== null ? <small className="text-muted-foreground">{attemptsLeft > 0 ? `${attemptsLeft} attempt${attemptsLeft === 1 ? "" : "s"} left` : "You have used every attempt."}</small> : null}
+          </div>
+        ) : null}
       </CardContent>
     </Card>
   );
 
   const panelOpen = creating || detail !== null;
+
+  const assessmentsArea = (
+    <>
+      {assessments.length === 0 ? (
+        <EmptyState>No assessments are available for this course.</EmptyState>
+      ) : (
+        <RowList label="Assessments">
+          {assessments.map((assessment) => {
+            const open = !creating && detail?.assessment.id === assessment.id;
+            return (
+              <ListRow key={assessment.id} selected={open} columns="sm:grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,2fr)_110px_minmax(0,1fr)_minmax(0,1fr)_auto]">
+                <div className="min-w-0">
+                  <strong className="block truncate">{assessment.title}</strong>
+                  <small className="text-muted-foreground">{assessment.questionCount} question{assessment.questionCount === 1 ? "" : "s"}{assessment.dueAtUtc ? ` · ${availability(assessment) === "closed" ? "closed" : "due"} ${new Date(assessment.dueAtUtc).toLocaleDateString()}` : ""}</small>
+                </div>
+                <div>
+                  <Badge>{assessment.status}</Badge>
+                </div>
+                <div className="hidden text-muted-foreground md:block">
+                  <small className="block">Time limit</small>
+                  {assessment.timeLimitMinutes ? `${assessment.timeLimitMinutes} min` : "No limit"}
+                </div>
+                <div className="hidden text-muted-foreground md:block">
+                  <small className="block">Attempts</small>
+                  {assessment.attemptLimit}
+                </div>
+                <div className="flex justify-end">
+                  <Button type="button" size="sm" variant="secondary" aria-label={`View details for ${assessment.title}`} aria-expanded={open} onClick={() => choose(assessment.id)}>
+                    View details
+                  </Button>
+                </div>
+              </ListRow>
+            );
+          })}
+        </RowList>
+      )}
+    </>
+  );
 
   return (
     <section className="flex flex-col gap-4 text-foreground">
@@ -560,7 +284,7 @@ export default function AssessmentsPage({ initialTab = "overview" }: { initialTa
               {assessments.length} assessment{assessments.length === 1 ? "" : "s"}
             </span>
             {canManage ? (
-              <Button onClick={openNew}>
+              <Button onClick={() => { setArea("assessments"); openNew(); }}>
                 <Plus className="mr-1 h-4 w-4" aria-hidden />
                 New assessment
               </Button>
@@ -591,38 +315,19 @@ export default function AssessmentsPage({ initialTab = "overview" }: { initialTa
         </Select>
       </div>
 
-      {assessments.length === 0 ? (
-        <EmptyState>No assessments are available for this course.</EmptyState>
+      {canManage ? (
+        <Tabs value={area} onValueChange={setArea}>
+          <TabsList>
+            <TabsTrigger value="assessments">Assessments</TabsTrigger>
+            <TabsTrigger value="rubrics">Rubrics</TabsTrigger>
+            <TabsTrigger value="accommodations">Accommodations</TabsTrigger>
+          </TabsList>
+          <TabsContent value="assessments">{assessmentsArea}</TabsContent>
+          <TabsContent value="rubrics">{courseId ? <AssessmentRubricsPanel courseId={courseId} /> : <EmptyState>Choose a course first.</EmptyState>}</TabsContent>
+          <TabsContent value="accommodations">{courseId ? <AssessmentAccommodationsPanel courseId={courseId} /> : <EmptyState>Choose a course first.</EmptyState>}</TabsContent>
+        </Tabs>
       ) : (
-        <RowList label="Assessments">
-          {assessments.map((assessment) => {
-            const open = !creating && detail?.assessment.id === assessment.id;
-            return (
-              <ListRow key={assessment.id} selected={open} columns="sm:grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,2fr)_110px_minmax(0,1fr)_minmax(0,1fr)_auto]">
-                <div className="min-w-0">
-                  <strong className="block truncate">{assessment.title}</strong>
-                  <small className="text-muted-foreground">{assessment.questionCount} question{assessment.questionCount === 1 ? "" : "s"}</small>
-                </div>
-                <div>
-                  <Badge>{assessment.status}</Badge>
-                </div>
-                <div className="hidden text-muted-foreground md:block">
-                  <small className="block">Time limit</small>
-                  {assessment.timeLimitMinutes ? `${assessment.timeLimitMinutes} min` : "No limit"}
-                </div>
-                <div className="hidden text-muted-foreground md:block">
-                  <small className="block">Attempts</small>
-                  {assessment.attemptLimit}
-                </div>
-                <div className="flex justify-end">
-                  <Button type="button" size="sm" variant="secondary" aria-label={`View details for ${assessment.title}`} aria-expanded={open} onClick={() => choose(assessment.id)}>
-                    View details
-                  </Button>
-                </div>
-              </ListRow>
-            );
-          })}
-        </RowList>
+        assessmentsArea
       )}
 
       <SidePanel open={panelOpen} label={creating ? "New assessment" : "Assessment details"} onClose={closePanel}>
@@ -657,6 +362,20 @@ export default function AssessmentsPage({ initialTab = "overview" }: { initialTa
                       </Field>
                     </div>
                   </FormSection>
+                  <FormSection title="Dates" description="Optional. Learners can start only between these times; an attempt ends at the deadline.">
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <Field id="assessment-opens" label="Opens at">
+                        <Input id="assessment-opens" type="datetime-local" value={opensAt} onChange={(e) => setOpensAt(e.target.value)} disabled={!selectedCourse} />
+                      </Field>
+                      <Field id="assessment-due" label="Deadline">
+                        <Input id="assessment-due" type="datetime-local" value={dueAt} onChange={(e) => setDueAt(e.target.value)} disabled={!selectedCourse} />
+                      </Field>
+                    </div>
+                  </FormSection>
+                  <FormSection title="Order" description="Mixing the order makes it harder to copy from a neighbour.">
+                    <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={shuffleQuestions} onChange={(e) => setShuffleQuestions(e.target.checked)} />Shuffle the questions for each learner</label>
+                    <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={shuffleOptions} onChange={(e) => setShuffleOptions(e.target.checked)} />Shuffle the options of choice questions</label>
+                  </FormSection>
                   <FormActions busy={busy} busyLabel="Creating…" submitLabel="Create draft" disabled={!selectedCourse} onCancel={closePanel} />
                 </FormLayout>
               </CardContent>
@@ -669,8 +388,8 @@ export default function AssessmentsPage({ initialTab = "overview" }: { initialTa
                 {canGrade ? <TabsTrigger value="grading">Grading</TabsTrigger> : null}
               </TabsList>
               <TabsContent value="overview">{overviewView}</TabsContent>
-              {canManage ? <TabsContent value="questions">{questionsView}</TabsContent> : null}
-              {canGrade ? <TabsContent value="grading">{gradingView}</TabsContent> : null}
+              {canManage ? <TabsContent value="questions"><AssessmentQuestionsPanel key={detail.assessment.id} detail={detail} onChanged={reloadSelected} /></TabsContent> : null}
+              {canGrade ? <TabsContent value="grading"><AssessmentGradingPanel assessmentId={detail.assessment.id} title={detail.assessment.title} /></TabsContent> : null}
             </Tabs>
           ) : (
             overviewView
@@ -681,89 +400,6 @@ export default function AssessmentsPage({ initialTab = "overview" }: { initialTa
   );
 }
 
-function AttemptPanel({
-  attempt,
-  answers,
-  setAnswers,
-  busy,
-  canAttempt,
-  onSubmit,
-}: {
-  attempt: Attempt;
-  answers: Record<string, string>;
-  setAnswers: React.Dispatch<React.SetStateAction<Record<string, string>>>;
-  busy: boolean;
-  canAttempt: boolean;
-  onSubmit: () => void;
-}) {
-  const editable = canAttempt && attempt.attempt.status === "InProgress";
-  const setAnswer = (id: string, value: string) => setAnswers((current) => ({ ...current, [id]: value }));
-  return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="text-xs text-muted-foreground">Attempt {attempt.attempt.attemptNumber}</p>
-            <CardTitle className="text-xl">{attempt.assessmentTitle}</CardTitle>
-          </div>
-          <Badge>{attempt.attempt.status}</Badge>
-        </div>
-        <CardDescription>Answer each question, then submit your attempt.</CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        {attempt.attempt.status === "Graded" ? (
-          <div className="rounded-md bg-muted p-4">
-            <strong className="text-2xl">{attempt.attempt.percentage}%</strong>
-            <span className="ml-2 text-sm text-muted-foreground">
-              {attempt.attempt.scorePoints} of {attempt.attempt.possiblePoints} points
-            </span>
-          </div>
-        ) : null}
-        {attempt.questions.map((question) => (
-          <div key={question.id} className="flex flex-col gap-2">
-            <Label htmlFor={`answer-${question.id}`} className="flex flex-col items-start gap-0.5">
-              <strong>
-                {question.displayOrder}. {question.prompt}
-              </strong>
-              <small className="font-normal text-muted-foreground">
-                {question.points} point{question.points === 1 ? "" : "s"}
-              </small>
-            </Label>
-            {question.options.length > 0 ? (
-              <Select id={`answer-${question.id}`} value={answers[question.id] || ""} onChange={(e) => setAnswer(question.id, e.target.value)} disabled={!editable}>
-                <option value="">Choose an answer</option>
-                {question.options.map((option) => (
-                  <option value={option} key={option}>
-                    {option}
-                  </option>
-                ))}
-              </Select>
-            ) : (
-              <Textarea id={`answer-${question.id}`} value={answers[question.id] || ""} onChange={(e) => setAnswer(question.id, e.target.value)} rows={4} disabled={!editable} placeholder="Your answer" />
-            )}
-          </div>
-        ))}
-        {editable ? (
-          <div>
-            <Button disabled={busy} onClick={onSubmit}>
-              Submit attempt
-            </Button>
-          </div>
-        ) : null}
-        {attempt.teacherFeedback ? (
-          <p className="rounded-md border border-border px-3 py-2 text-sm">Teacher feedback: {attempt.teacherFeedback}</p>
-        ) : null}
-      </CardContent>
-    </Card>
-  );
-}
-
-function splitCsv(value: string) {
-  return value
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
 function readError(exception: unknown, fallback: string) {
   return exception instanceof ApiError ? exception.message : fallback;
 }

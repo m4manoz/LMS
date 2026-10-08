@@ -4,9 +4,12 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ApiError } from '@/lib/api'
 import { normalizeOrganization, organizationFromUrl, rememberOrganization, rememberedOrganization, validateOrganization } from '@/lib/organization'
-import { getLanding, isSafeLink, type PublicCourse, type PublicLanding, type PublicOrganization } from '@/lib/publicApi'
+import { getLanding, isSafeLink, landingImageUrl, type PublicCourse, type PublicLanding, type PublicOrganization } from '@/lib/publicApi'
 import { cn } from '@/lib/utils'
-import CourseDialog from './landing/CourseDialog'
+import { catalogRoute, parseSiteRoute, siteHref, type SiteRoute } from '@/lib/siteRoutes'
+import AboutPage from './landing/AboutPage'
+import CatalogPage from './landing/CatalogPage'
+import CoursePage from './landing/CoursePage'
 import { BannerCarousel, CourseCard, CourseRow, FaqList, SiteFooter, iconFor } from './landing/parts'
 
 // Kept here because the sign-in page and its tests have always imported them from the landing page.
@@ -48,7 +51,8 @@ export default function LandingPage({ fixed, onSignIn, onJoin }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [category, setCategory] = useState<string | null>(null)
-  const [opened, setOpened] = useState<PublicCourse | null>(null)
+  // Which page of the website is showing. It lives in the address after the # so pages can be linked to and the back button works.
+  const [route, setRoute] = useState<SiteRoute>(() => parseSiteRoute(window.location.hash) ?? { page: 'home' })
   const [menu, setMenu] = useState(false)
   const [explore, setExplore] = useState(false)
 
@@ -61,6 +65,24 @@ export default function LandingPage({ fixed, onSignIn, onJoin }: Props) {
       .catch((exception) => { if (current) { setData(null); setError(exception instanceof ApiError && exception.status === 404 && !fixed ? 'That organization was not found. Check its short name.' : 'The page could not be loaded. Please try again.') } })
     return () => { current = false }
   }, [organization, fixed])
+
+  useEffect(() => {
+    const changed = () => { const next = parseSiteRoute(window.location.hash); if (next) setRoute(next) }   // a section anchor (#faq) is not a page
+    window.addEventListener('hashchange', changed)
+    return () => window.removeEventListener('hashchange', changed)
+  }, [])
+  // A new page starts at its top.
+  useEffect(() => { document.documentElement.scrollTop = 0 }, [route.page, route.page === 'course' ? route.id : ''])
+
+  /** Opens a page of the website. A replace changes the address without adding a back-button step (used while typing in filters). */
+  function go(next: SiteRoute, replace = false) {
+    const href = siteHref(next)
+    if (replace) { window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${href}`); setRoute(next) }
+    else if (window.location.hash === href) setRoute(next)
+    else window.location.hash = href
+    setMenu(false); setExplore(false)
+  }
+  const openCourse = (course: PublicCourse) => go({ page: 'course', id: course.id })
 
   const courses = data?.courses ?? []
   const byId = useMemo(() => new Map(courses.map((course) => [course.id, course])), [courses])
@@ -76,6 +98,12 @@ export default function LandingPage({ fixed, onSignIn, onJoin }: Props) {
     setMenu(false); setExplore(false)
     if (link === '#login') return onSignIn(organization ?? undefined)
     if (link === '#join') return onJoin()
+    if (link.startsWith('#/')) { const target = parseSiteRoute(link); if (target) return go(target) }
+    // Away from the home page the sections it scrolls to are not there, so they map to the page that has them.
+    if (link.startsWith('#') && route.page !== 'home') {
+      if (link === '#courses' || link === '#categories') return go(catalogRoute())
+      if (link === '#faq' || link === '#why') return go({ page: 'about' })
+    }
     if (link.startsWith('#')) { if (link === '#courses') { setSearch(''); setCategory(null) } return jump(link.slice(1)) }
     if (!isSafeLink(link)) return
     if (link.startsWith('/')) window.location.assign(link)
@@ -95,11 +123,18 @@ export default function LandingPage({ fixed, onSignIn, onJoin }: Props) {
       <header className="sticky top-0 z-40 border-b border-border/70 bg-background/90 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-6xl items-center gap-3 px-4">
           <a href="/" className="flex shrink-0 items-center gap-2 font-semibold" aria-label={`${name} home`}>
-            <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-primary-foreground"><GraduationCap className="h-5 w-5" /></span>
+            {content?.logoImageId && data ? <img src={landingImageUrl(data.organization.slug, content.logoImageId)} alt="" className="h-9 w-auto max-w-[8rem] rounded object-contain" />
+              : <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-primary-foreground"><GraduationCap className="h-5 w-5" /></span>}
             <span className="hidden text-lg sm:inline">{name}</span>
           </a>
           {data ? (
             <>
+              <nav aria-label="Main" className="hidden items-center gap-1 md:flex">
+                {([['Home', { page: 'home' }], ['Courses', catalogRoute()], ['About', { page: 'about' }]] as [string, SiteRoute][]).map(([label, target]) => (
+                  <a key={label} href={siteHref(target)} aria-current={route.page === target.page || (label === 'Courses' && route.page === 'course') ? 'page' : undefined}
+                    className={cn('rounded-md px-3 py-2 text-sm font-medium hover:bg-muted', (route.page === target.page || (label === 'Courses' && route.page === 'course')) && 'text-primary')}>{label}</a>
+                ))}
+              </nav>
               <div className="relative hidden md:block">
                 <Button type="button" variant="ghost" aria-expanded={explore} aria-haspopup="true" onClick={() => setExplore((value) => !value)}>Explore<ChevronDown className="ml-1 h-4 w-4" aria-hidden /></Button>
                 {explore ? (
@@ -109,7 +144,7 @@ export default function LandingPage({ fixed, onSignIn, onJoin }: Props) {
                   </div>
                 ) : null}
               </div>
-              <form role="search" className="relative mx-auto hidden max-w-md flex-1 md:block" onSubmit={(event) => { event.preventDefault(); jump('courses') }}>
+              <form role="search" className="relative mx-auto hidden max-w-md flex-1 md:block" onSubmit={(event) => { event.preventDefault(); if (route.page === 'home') jump('courses'); else go(catalogRoute({ q: search })) }}>
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
                 <Input type="search" aria-label="Search courses" className="h-10 rounded-full pl-9" placeholder={content?.hero.searchPlaceholder || 'Search courses'} value={search} onChange={(event) => { setSearch(event.target.value); setCategory(null) }} />
               </form>
@@ -124,6 +159,7 @@ export default function LandingPage({ fixed, onSignIn, onJoin }: Props) {
         </div>
         {menu ? (
           <div data-testid="mobile-menu" className="flex flex-col gap-2 border-t border-border px-4 py-3 md:hidden">
+            {data ? <nav aria-label="Pages" className="flex gap-2">{([['Home', { page: 'home' }], ['Courses', catalogRoute()], ['About', { page: 'about' }]] as [string, SiteRoute][]).map(([label, target]) => <a key={label} href={siteHref(target)} onClick={() => setMenu(false)} className="rounded-md border border-border px-3 py-1.5 text-sm font-medium hover:bg-muted">{label}</a>)}</nav> : null}
             {data ? <Input type="search" aria-label="Search courses" placeholder="Search courses" value={search} onChange={(event) => { setSearch(event.target.value); setCategory(null) }} /> : null}
             {data?.categories.map((item) => <button key={item.id} type="button" className="rounded-md px-2 py-2 text-left text-sm hover:bg-muted" onClick={() => showCategory(item.id)}>{item.name} <small className="text-muted-foreground">({item.courses})</small></button>)}
             <div className="mt-1 flex gap-2"><Button variant="outline" className="flex-1" onClick={() => follow('#login')}>Log in</Button><Button className="flex-1" onClick={() => follow('#join')}>I have an invitation</Button></div>
@@ -131,20 +167,29 @@ export default function LandingPage({ fixed, onSignIn, onJoin }: Props) {
         ) : null}
       </header>
 
-      {content && data ? (
+      {content && data && route.page === 'courses' ? (
+        <CatalogPage courses={courses} categories={data.categories} route={route} onRoute={go} onOpen={openCourse} />
+      ) : content && data && route.page === 'course' ? (
+        <CoursePage organization={data.organization.slug} organizationName={data.organization.name} courses={courses} courseId={route.id} onOpen={openCourse} onBack={() => go(catalogRoute())} onLogin={() => follow('#login')} />
+      ) : content && data && route.page === 'about' ? (
+        <AboutPage name={data.organization.name} content={content} onLink={follow} />
+      ) : content && data ? (
         <main>
           <section className="border-b border-border bg-gradient-to-b from-primary/10 to-transparent">
-            <div className="mx-auto flex max-w-6xl flex-col items-start gap-5 px-4 py-14 sm:py-20">
-              <h1 className="max-w-3xl text-4xl font-bold tracking-tight sm:text-5xl">{content.hero.title}</h1>
-              {content.hero.subtitle ? <p className="max-w-2xl text-lg text-muted-foreground">{content.hero.subtitle}</p> : null}
-              <div className="flex flex-wrap items-center gap-3">
-                {content.hero.primaryLabel && content.hero.primaryLink ? <Button size="lg" className="h-12 px-6 text-base" onClick={() => follow(content.hero.primaryLink)}>{content.hero.primaryLabel}</Button> : null}
+            <div className="mx-auto flex max-w-6xl flex-col gap-8 px-4 py-14 sm:py-20 md:flex-row md:items-center md:justify-between">
+              <div className="flex flex-col items-start gap-5">
+                <h1 className="max-w-3xl text-4xl font-bold tracking-tight sm:text-5xl">{content.hero.title}</h1>
+                {content.hero.subtitle ? <p className="max-w-2xl text-lg text-muted-foreground">{content.hero.subtitle}</p> : null}
+                <div className="flex flex-wrap items-center gap-3">
+                  {content.hero.primaryLabel && content.hero.primaryLink ? <Button size="lg" className="h-12 px-6 text-base" onClick={() => follow(content.hero.primaryLink)}>{content.hero.primaryLabel}</Button> : null}
+                </div>
               </div>
+              {content.heroImageId ? <img src={landingImageUrl(data.organization.slug, content.heroImageId)} alt="" className="h-auto max-h-72 w-full rounded-2xl object-cover md:w-5/12" /> : null}
             </div>
           </section>
 
           <div className="mx-auto flex max-w-6xl flex-col gap-14 px-4 py-10">
-            <BannerCarousel banners={content.banners} onLink={follow} />
+            <BannerCarousel banners={content.banners} slug={data.organization.slug} onLink={follow} />
 
             {content.intents.items.length > 0 ? (
               <section aria-label={content.intents.title || 'What brings you here'} className="flex flex-col gap-3">
@@ -160,10 +205,10 @@ export default function LandingPage({ fixed, onSignIn, onJoin }: Props) {
                     <h2 className="text-xl font-semibold" role="status">{results.length} course{results.length === 1 ? '' : 's'}{category ? ` in ${data.categories.find((item) => item.id === category)?.name ?? 'this category'}` : ''}{search.trim() ? ` for “${search.trim()}”` : ''}</h2>
                     <Button type="button" variant="outline" size="sm" onClick={() => { setSearch(''); setCategory(null) }}>Clear search</Button>
                   </div>
-                  {results.length === 0 ? <p className="rounded-lg border border-dashed border-border p-6 text-sm text-muted-foreground">No course matches. Try another word, or clear the search to see everything.</p> : <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">{results.map((course) => <div key={course.id} className="flex [&>button]:w-full"><CourseCard course={course} onOpen={setOpened} /></div>)}</div>}
+                  {results.length === 0 ? <p className="rounded-lg border border-dashed border-border p-6 text-sm text-muted-foreground">No course matches. Try another word, or clear the search to see everything.</p> : <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">{results.map((course) => <div key={course.id} className="flex [&>button]:w-full"><CourseCard course={course} onOpen={openCourse} /></div>)}</div>}
                 </section>
-              ) : data.rows.length > 0 ? data.rows.map((row) => <CourseRow key={row.id} title={row.title} subtitle={row.subtitle} courses={row.courseIds.map((id) => byId.get(id)).filter((course): course is PublicCourse => course !== undefined)} onOpen={setOpened} />)
-                : courses.length > 0 ? <CourseRow title="Courses" courses={courses} onOpen={setOpened} />
+              ) : data.rows.length > 0 ? data.rows.map((row) => <CourseRow key={row.id} title={row.title} subtitle={row.subtitle} courses={row.courseIds.map((id) => byId.get(id)).filter((course): course is PublicCourse => course !== undefined)} onOpen={openCourse} />)
+                : courses.length > 0 ? <CourseRow title="Courses" courses={courses} onOpen={openCourse} />
                   : <p className="rounded-lg border border-dashed border-border p-8 text-center text-muted-foreground">No courses are open yet. Please check back soon.</p>}
             </div>
 
@@ -236,8 +281,7 @@ export default function LandingPage({ fixed, onSignIn, onJoin }: Props) {
         </main>
       )}
 
-      {content && data ? <SiteFooter name={data.organization.name} about={content.footerAbout} groups={content.footerGroups} copyright={content.copyright} onLink={follow} /> : null}
-      {organization ? <CourseDialog organization={organization} course={opened} onClose={() => setOpened(null)} onLogin={() => { setOpened(null); follow('#login') }} /> : null}
+      {content && data ? <SiteFooter name={data.organization.name} about={content.footerAbout} groups={content.footerGroups} copyright={content.copyright} onLink={follow} logoUrl={content.logoImageId ? landingImageUrl(data.organization.slug, content.logoImageId) : undefined} /> : null}
     </div>
   )
 }

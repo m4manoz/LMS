@@ -49,8 +49,29 @@ public sealed class LiveClassSession
     public LiveSessionStatus Status { get; set; }
     /// <summary>A waiting room: people who are not the host or staff wait until the host lets them in.</summary>
     public bool RequireApproval { get; set; }
+    /// <summary>LiveKit classes: the host agreed, when scheduling, that the class is recorded automatically from the moment someone is in the room until it closes.</summary>
+    public bool AutoRecord { get; set; }
     public DateTimeOffset CreatedAtUtc { get; set; }
     public DateTimeOffset UpdatedAtUtc { get; set; }
+}
+
+/// <summary>One person's own recording of a LiveKit class (their camera and voice, apart from everyone else), made while the whole-room recording runs.</summary>
+public sealed class SessionTrackRecording
+{
+    public Guid Id { get; set; }
+    public Guid TenantId { get; set; }
+    public Guid SessionId { get; set; }
+    public Guid UserId { get; set; }
+    public string ProviderRecordingId { get; set; } = string.Empty;
+    public string? OutputKey { get; set; }
+    /// <summary>The stored file (a course file) once the recording is finished.</summary>
+    public Guid? ContentAssetId { get; set; }
+    public long SizeBytes { get; set; }
+    public int? DurationSeconds { get; set; }
+    public RecordingStatus Status { get; set; }
+    public string? LastError { get; set; }
+    public DateTimeOffset StartedAtUtc { get; set; }
+    public DateTimeOffset? FinishedAtUtc { get; set; }
 }
 
 public enum JoinRequestStatus

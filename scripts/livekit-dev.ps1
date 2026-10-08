@@ -1,4 +1,4 @@
-<#
+﻿<#
 Starts a LiveKit server with its recording service (Egress) and Redis in Docker, for trying out live classes and class recordings on this machine.
 
   .\scripts\livekit-dev.ps1            start (or restart) everything
@@ -8,6 +8,8 @@ Keys are devkey / secret. The server listens on ws://localhost:7880.
 Recordings are written to the folder given by -OutputDirectory (default src\Lms.Web\.e2e\egress), which the API reads: start the API with
   LiveKit__Egress__Enabled=true  LiveKit__Egress__Destination=Local  LiveKit__Egress__LocalDirectory=<that folder>
 The browser tests use the same folder; run them with E2E_EGRESS=1.
+LiveKit also calls the API's webhook (-WebhookUrl) so attendance comes from the room itself and recordings are picked up the moment they end.
+To also record each person on their own, start the API with LiveKit__Egress__SeparateTracks=true.
 
 -HostIp is the address of this machine that both your browser and the Docker containers can reach (the recording service joins the room through it).
 It is found automatically (the first private 192.168.x / 10.x address) when not given.
@@ -15,7 +17,9 @@ It is found automatically (the first private 192.168.x / 10.x address) when not 
 param(
   [switch]$Stop,
   [string]$HostIp = "",
-  [string]$OutputDirectory = ""
+  [string]$OutputDirectory = "",
+  # Where LiveKit reports who joined and left, and when recordings end (the API's webhook). Containers reach this machine as host.docker.internal.
+  [string]$WebhookUrl = "http://host.docker.internal:5106/api/v1/integrations/livekit/webhook"
 )
 
 $ErrorActionPreference = "Stop"
@@ -49,7 +53,13 @@ $OutputDirectory = (Resolve-Path $OutputDirectory).Path
 
 Invoke-Docker network create lms-lk-net
 Invoke-Docker run -d --name lms-lk-redis --network lms-lk-net redis:7-alpine
-Invoke-Docker run -d --name lms-livekit-e2e --network lms-lk-net --network-alias livekit -p 7880:7880 -p 7881:7881 -p 7882:7882/udp livekit/livekit-server --dev --bind 0.0.0.0 --node-ip $HostIp --redis-host lms-lk-redis:6379
+$serverConfig = @"
+webhook:
+  api_key: devkey
+  urls:
+    - $WebhookUrl
+"@
+Invoke-Docker run -d --name lms-livekit-e2e --network lms-lk-net --network-alias livekit --add-host host.docker.internal:host-gateway -e "LIVEKIT_CONFIG=$serverConfig" -p 7880:7880 -p 7881:7881 -p 7882:7882/udp livekit/livekit-server --dev --bind 0.0.0.0 --node-ip $HostIp --redis-host lms-lk-redis:6379
 
 $config = @"
 api_key: devkey

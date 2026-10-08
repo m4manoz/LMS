@@ -4,6 +4,7 @@ using Lms.Api.Domain.Tenants;
 using Lms.Api.Features.Identity;
 using Lms.Api.Features.Videos;
 using Lms.Api.Features.Landing;
+using Lms.Api.Features.Platform;
 using Lms.Api.Features.Courses;
 using Lms.Api.Features.Learning;
 using Lms.Api.Features.Assessments;
@@ -56,6 +57,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
 builder.Services.AddProblemDetails();
+builder.Services.AddSingleton<Lms.Api.Infrastructure.Messaging.MessageHub>();
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -65,7 +67,7 @@ builder.Services.AddRateLimiter(options =>
         var tenant = httpContext.Request.Headers["X-Tenant-Slug"].FirstOrDefault() ?? "public";
         // Applying for a course is open to anyone, so it gets the same strict limit as signing in.
         var isApplication = HttpMethods.IsPost(httpContext.Request.Method) && httpContext.Request.Path.StartsWithSegments("/api/v1/public");
-        var isLogin = isApplication || httpContext.Request.Path.StartsWithSegments("/api/v1/auth/login") || httpContext.Request.Path.StartsWithSegments("/api/v1/auth/password-reset") || httpContext.Request.Path.StartsWithSegments("/api/v1/tenant/invitations/public");
+        var isLogin = isApplication || httpContext.Request.Path.StartsWithSegments("/api/v1/auth/login") || httpContext.Request.Path.StartsWithSegments("/api/v1/auth/password-reset") || httpContext.Request.Path.StartsWithSegments("/api/v1/tenant/me/password") || httpContext.Request.Path.StartsWithSegments("/api/v1/tenant/invitations/public");
         var partition = $"{(isLogin ? "login" : "api")}:{tenant}:{client}";
         return RateLimitPartition.GetFixedWindowLimiter(partition, _ => new FixedWindowRateLimiterOptions
         {
@@ -101,7 +103,24 @@ builder.Services.AddSingleton(sp => S3StorageOptions.From(sp.GetRequiredService<
 builder.Services.AddSingleton<IObjectStore>(sp => UsesObjectStorage(sp.GetRequiredService<IConfiguration>())
     ? new S3ObjectStore(sp.GetRequiredService<S3StorageOptions>(), sp.GetRequiredService<IManagedSecretStore>())
     : null!);
+builder.Services.AddSingleton(sp => FileScanOptions.From(sp.GetRequiredService<IConfiguration>()));
+builder.Services.AddSingleton<IFileScanner>(sp =>
+{
+    var options = sp.GetRequiredService<FileScanOptions>();
+    if (options.Validate() is { Count: > 0 } problems) throw new InvalidOperationException("The virus scan configuration is invalid. " + string.Join(" ", problems));
+    return options.Enabled ? new ClamAvScanner(options) : new NoFileScanner();
+});
+builder.Services.AddExceptionHandler<FileRejectedExceptionHandler>();
+// Every upload passes through the virus scanner (when one is set up) before it is stored.
 builder.Services.AddSingleton<IContentAssetStorage>(sp =>
+{
+    var storage = BuildStorage(sp);
+    var options = sp.GetRequiredService<FileScanOptions>();
+    // Checked even when scanning is off, so a misspelt provider fails at startup instead of silently leaving uploads unscanned.
+    if (options.Validate() is { Count: > 0 } problems) throw new InvalidOperationException("The virus scan configuration is invalid. " + string.Join(" ", problems));
+    return options.Enabled ? new ScanningContentAssetStorage(storage, sp.GetRequiredService<IFileScanner>(), options, sp.GetRequiredService<ILogger<ScanningContentAssetStorage>>()) : storage;
+});
+static IContentAssetStorage BuildStorage(IServiceProvider sp)
 {
     var configuration = sp.GetRequiredService<IConfiguration>();
     var provider = configuration["Storage:Provider"] ?? "Local";
@@ -117,7 +136,7 @@ builder.Services.AddSingleton<IContentAssetStorage>(sp =>
     return configuration.GetValue("Storage:LocalFallback", true)
         ? new FallbackContentAssetStorage(primary, sp.GetRequiredService<LocalContentAssetStorage>())
         : primary;
-});
+}
 builder.Services.AddHttpClient();
 builder.Services.AddScoped<NotificationService>();
 builder.Services.AddSingleton<EmailOutbox>();
@@ -141,6 +160,10 @@ builder.Services.AddSingleton<LiveKitLiveClassProvider>();
 builder.Services.AddScoped<LiveKitCredentialStore>();
 builder.Services.AddSingleton<ILiveKitEgressClient, LiveKitEgressClient>();
 builder.Services.AddScoped<LiveKitRecordings>();
+builder.Services.AddSingleton<ILiveKitRoomClient, LiveKitRoomClient>();
+builder.Services.AddScoped<LiveKitClassService>();
+builder.Services.AddSingleton<LiveKitClassAutomation>();
+builder.Services.AddHostedService<LiveKitClassAutomationWorker>();
 builder.Services.AddSingleton<LiveKitRecordingSync>();
 builder.Services.AddHostedService<LiveKitRecordingWorker>();
 builder.Services.AddSingleton<ILiveClassProvider>(services => services.GetRequiredService<LocalLiveClassProvider>());
@@ -377,6 +400,7 @@ app.MapIdentityEndpoints();
 app.MapCourseEndpoints();
 app.MapLearningEndpoints();
 app.MapAssessmentEndpoints();
+app.MapAssessmentAuthoringEndpoints();
 app.MapNotificationEndpoints();
 app.MapCertificateEndpoints();
 app.MapReportEndpoints();
@@ -391,9 +415,15 @@ app.MapIntegrationEndpoints();
 app.MapContentBlockEndpoints();
 app.MapEnrollmentManagementEndpoints();
 app.MapInvitationEndpoints();
+app.MapVideoUploadEndpoints();   // before the video routes so uploads is never read as a video id
 app.MapVideoEndpoints();
+app.MapVideoStudyEndpoints();
 app.MapVideoAiEndpoints();
 app.MapLandingEndpoints();
+app.MapLandingImageEndpoints();
+app.MapRatingEndpoints();
+app.MapPlatformTenantEndpoints();
+app.MapPeopleEndpoints();
 app.MapPasswordResetEndpoints();
 app.MapCohortEndpoints();
 app.MapAiEndpoints();

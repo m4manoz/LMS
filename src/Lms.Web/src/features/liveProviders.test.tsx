@@ -187,6 +187,52 @@ describe('scheduling follows the organization setting', () => {
   })
 })
 
+describe('scheduling a class that records itself', () => {
+  beforeEach(() => { request.mockReset(); permissions = ['liveclass.manage'] })
+
+  async function openForm(provider: string) {
+    serve(provider)
+    const base = request.getMockImplementation()!
+    request.mockImplementation((path: string, options?: { method?: string; body?: string }) =>
+      path === '/api/v1/tenant/courses' ? Promise.resolve([{ id: 'c1', code: 'ALG', title: 'Algebra', status: 'Published' }]) : base(path, options))
+    render(<LiveClassesPage />)
+    await userEvent.click(await screen.findByRole('button', { name: /Schedule class/ }))
+    return await screen.findByRole('dialog', { name: 'Schedule a class' })
+  }
+
+  it('is offered for LiveKit classes only, and needs a course first', async () => {
+    const panel = await openForm('LiveKit')
+    const box = await within(panel).findByRole('checkbox', { name: /Record this class automatically/ })
+    expect(box).toBeDisabled()
+    expect(within(panel).getByText(/Choose a course first/)).toBeInTheDocument()
+    await userEvent.selectOptions(within(panel).getByLabelText('Course'), 'c1')
+    expect(box).toBeEnabled()
+    expect(within(panel).getByText(/Choosing this is your agreement/)).toBeInTheDocument()
+  })
+
+  it('sends the choice with the class', async () => {
+    const panel = await openForm('LiveKit')
+    await userEvent.selectOptions(await within(panel).findByLabelText('Course'), 'c1')
+    await userEvent.click(within(panel).getByRole('checkbox', { name: /Record this class automatically/ }))
+    await userEvent.click(within(panel).getByRole('button', { name: 'Schedule class' }))
+    await waitFor(() => expect(calls('/live-classes/sessions', 'POST')).toHaveLength(1))
+    expect(JSON.parse(calls('/live-classes/sessions', 'POST')[0][1].body)).toMatchObject({ courseId: 'c1', autoRecord: true })
+  })
+
+  it('sends nothing about it when it is left off', async () => {
+    const panel = await openForm('LiveKit')
+    await userEvent.click(await within(panel).findByRole('button', { name: 'Schedule class' }))
+    await waitFor(() => expect(calls('/live-classes/sessions', 'POST')).toHaveLength(1))
+    expect('autoRecord' in JSON.parse(calls('/live-classes/sessions', 'POST')[0][1].body)).toBe(false)
+  })
+
+  it('is not offered for classes held in other tools', async () => {
+    const panel = await openForm('Jitsi')
+    await within(panel).findByLabelText('Course')
+    expect(within(panel).queryByRole('checkbox', { name: /Record this class automatically/ })).toBeNull()
+  })
+})
+
 describe('recordings follow where the class was held', () => {
   beforeEach(() => { request.mockReset(); permissions = ['liveclass.manage'] })
 
@@ -257,7 +303,7 @@ describe('joining a LiveKit class', () => {
 describe('recording a LiveKit class', () => {
   const recording = (over: Record<string, unknown> = {}) => ({ id: 'r1', sessionId: 's1', provider: 'livekit', providerRecordingId: 'EG_1', recordingUrl: null, status: 'Recording', attemptCount: 0, maxAttempts: 0, lastError: null, requestedAtUtc: '2030-01-01T10:00:00Z', availableAtUtc: null, retainUntilUtc: null, videoId: null, ...over })
 
-  async function open(current: Record<string, unknown> | null, perms = ['liveclass.manage']) {
+  async function open(current: Record<string, unknown> | null, perms = ['liveclass.manage'], tracks: unknown[] = []) {
     request.mockReset(); permissions = perms
     serve('LiveKit')
     const base = request.getMockImplementation()!
@@ -266,6 +312,7 @@ describe('recording a LiveKit class', () => {
       if (path.endsWith('/recording/start') && options?.method === 'POST') { state = recording(); return Promise.resolve(state) }
       if (path.endsWith('/recording/stop') && options?.method === 'POST') { state = recording({ status: 'Processing' }); return Promise.resolve(state) }
       if (path.endsWith('/recording') && !options?.method) return Promise.resolve(state)
+      if (path.endsWith('/recording/tracks')) return Promise.resolve(tracks)
       return base(path, options)
     })
     render(<LiveClassesPage initialTab="recording" />)
@@ -293,6 +340,18 @@ describe('recording a LiveKit class', () => {
     expect(await within(panel).findByText(/Saved to the video library as a class recording/)).toBeInTheDocument()
     expect(within(panel).queryByRole('button', { name: /Start recording/ })).toBeNull()
     expect(within(panel).queryByLabelText('Recording link')).toBeNull()
+  })
+
+  it('lists each person recorded on their own, with a way to open the finished ones', async () => {
+    const panel = await open(recording({ status: 'Processing' }), ['liveclass.manage'], [
+      { id: 't1', userId: 'u1', displayName: 'Ada', status: 'Available', durationSeconds: 62, sizeBytes: 100, lastError: null, downloadUrl: '/api/v1/tenant/courses/c1/assets/a1' },
+      { id: 't2', userId: 'u2', displayName: 'Ben', status: 'Failed', durationSeconds: null, sizeBytes: 0, lastError: 'out of disk space', downloadUrl: null }])
+    const list = await within(panel).findByRole('region', { name: 'Recordings of each person' })
+    expect(within(list).getByText('Ada')).toBeInTheDocument()
+    expect(within(list).getByText('1:02')).toBeInTheDocument()
+    expect(within(list).getByRole('link', { name: 'Open the recording of Ada' })).toHaveAttribute('href', '/api/v1/tenant/courses/c1/assets/a1')
+    expect(within(list).getByText('out of disk space')).toBeInTheDocument()
+    expect(within(list).queryByRole('link', { name: 'Open the recording of Ben' })).toBeNull()
   })
 
   it('shows why a recording failed, offers to start again, and still allows attaching a link', async () => {

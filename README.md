@@ -118,6 +118,19 @@ Invoke-RestMethod `
   -Body '{"name":"Acme Academy","slug":"acme"}'
 ```
 
+### Manage organizations (platform console)
+
+The platform operator manages every organization from `http://localhost:5173/#/platform`. It asks for the platform key (`Platform:ProvisioningKey`, kept in that browser tab only) and lists organizations with their status, people and courses. From there you can create an organization with its first administrator, open one to see its administrators and website addresses, rename it, and suspend, activate or archive it. Suspending or archiving keeps all data, stops the organization resolving, closes its public page and signs everyone out; activating brings it back.
+
+The same actions are available to scripts, all with the `X-Platform-Key` header:
+
+- `GET /api/v1/platform/tenants?q=&status=` — list (status: Active, Suspended, Archived)
+- `GET /api/v1/platform/tenants/{slug}` — details with counts, administrators and addresses
+- `PUT /api/v1/platform/tenants/{slug}` — rename (`{ "name": "..." }`; the short name never changes)
+- `POST /api/v1/platform/tenants/{slug}/suspend`, `/activate`, `/archive`
+
+Each change is recorded in the organization's security audit log. Not yet: deleting an organization, per-organization plans or limits, and signing the operator in with an account instead of the key.
+
 ### Browser tests
 
 `cd srcLms.Web ; npm run e2e` runs the Playwright smoke tests in Chromium (first time only: `npx playwright install chromium`). They start their own API (in-memory database on port 5299, built into `srcLms.Web.e2e`) and web server (port 5273), so they never touch your development database or a running dev API. They cover sign-in, categories, authoring a course through review, publishing and a second version, a learner's view, password reset, and open every menu page checking for script and server errors. A failed run leaves screenshots and a trace in `srcLms.Web	est-results`.
@@ -171,7 +184,33 @@ When PostgreSQL is enabled, apply the checked-in migration with `Database:ApplyM
 - `POST /api/v1/tenant/assessments/{id}/attempts` — start a learner attempt
 - `PUT /api/v1/tenant/assessment-attempts/{id}/answers/{questionId}` — save an answer
 - `POST /api/v1/tenant/assessment-attempts/{id}/submit` — submit and automatically grade objective questions
-- `GET /api/v1/tenant/assessments/{id}/attempts` and `POST /api/v1/tenant/assessment-attempts/{id}/grade` — teacher review and grading
+- `GET /api/v1/tenant/assessments/{id}/attempts` and `POST /api/v1/tenant/assessment-attempts/{id}/grade` — teacher review and grading (graders only; a learner can open only their own attempt)
+
+### Assessment depth
+
+- **Edit:** `PUT /assessments/{id}` (title, limits, shuffle settings); `PUT` and `DELETE /assessments/{id}/questions/{questionId}` while the assessment is a draft or a new version is being edited.
+- **Versions:** a published assessment is changed through `POST /assessments/{id}/versions` (a copy of its questions). Learners keep the live version until `POST /assessments/{id}/publish` makes the copy live; `DELETE /assessments/{id}/versions/draft` discards it. An attempt stays on the version it started on, and the assessment keeps its identity, so gradebook entries do not move.
+- **Pools and shuffling:** a question's `pool` name groups alternatives; `PUT /assessments/{id}/pools/{name}` sets how many each attempt draws (questions in a pool must be worth the same points). `shuffleQuestions` and `shuffleOptions` mix the order per learner. Each attempt stores the questions and option order it was dealt, so reopening it shows the same thing.
+- **Rubrics:** `GET`/`POST /courses/{id}/rubrics`, `PUT`/`DELETE /rubrics/{id}`. An essay or file question with a `rubricId` is worth the rubric's total. Grade it with `POST …/grade` and `answers: [{ questionId, criterionScores: [{ criterionId, points }], feedback }]` (plain questions take `scorePoints`); sending only `scorePoints` still grades the whole attempt with one total. A rubric that questions use cannot be changed or deleted; copy it instead.
+- **Accommodations:** `GET /courses/{id}/accommodations`, `PUT`/`DELETE /courses/{id}/accommodations/{learnerUserId}` (`extraTimePercent` 0–200, `extraAttempts` 0–10, a staff-only `note`). They apply to every assessment in the course, are fixed into each attempt when it starts, and are audited.
+- **File answers:** `POST`/`DELETE`/`GET /assessment-attempts/{id}/answers/{questionId}/file` for file-upload questions (25 MB, executable and web-page types refused). The learner and graders can download; nobody else can.
+- **Short answers** now count as correct when the typed text matches any one accepted answer.
+
+## Assignments, ratings and pictures
+
+- **Assignments:** `POST /assignments` takes an optional `rubricId` (the assignment is then worth the rubric's total) and `isGroup`. Grade a rubric assignment with `criterionScores: [{ criterionId, points }]`. For group work, `GET`/`POST /assignments/{id}/groups`, `PUT`/`DELETE …/groups/{groupId}` (members must be enrolled, one group each; locked once the group has submitted). `GET /assignments/{id}/similarity?threshold=30` lists pairs of learners whose work shares a lot of wording (graders only).
+- **Assessment deadlines:** `opensAtUtc` and `dueAtUtc` on an assessment; no attempt can start outside them and an attempt ends at the deadline. They appear in the learner's task feed and the calendar.
+- **Invitations:** `POST /invitations/public/register` with an existing account's `password` (and no name) joins an organization with that account; `lookup` reports `hasAccount` and `isMember`.
+- **Ratings:** `GET`/`PUT`/`DELETE /courses/{id}/rating` for the learner; `GET /courses/{id}/ratings` and `POST /ratings/{id}/hide|show` for staff. The public course card has `ratingAverage` and `ratingCount`; the public course has the distribution and reviews.
+- **Landing pictures:** `GET`/`POST /tenant/landing/images`, `DELETE …/{id}`; the page content refers to them by `logoImageId`, `heroImageId` and each banner's `imageId`; they are served without sign-in from `GET /api/v1/public/{slug}/landing-images/{id}`.
+- **Storage:** per-organization buckets (`Storage:S3:TenantBuckets`) and virus scanning (`Storage:VirusScan:*`) are described in `docs/storage.md`.
+
+## Messages and forums
+
+- **Messages** (`/api/v1/tenant/messages`): `POST /conversations/{id}/messages` (JSON) or `…/messages/upload` (multipart `file` and optional `body`) to send; `PUT` and `DELETE …/messages/{messageId}` to edit or delete your own (a moderator may delete anyone's in a course chat); `GET …/messages/{messageId}/attachment` to download.
+- **Live updates:** `GET /messages/stream` is a server-sent-event stream. Each event is `{ type: message | edited | deleted, conversationId, messageId }` with no message text; fetch the messages through the normal calls. The connection ends after 5 minutes (the app reconnects) and sends a ping every 25 seconds. If you run behind a reverse proxy, turn response buffering off for this path (the server sends `X-Accel-Buffering: no`). The channel lives in one server's memory, so with several servers a person hears only about messages handled by the server they are connected to; the app polls as a fallback.
+- **Forums** (`/api/v1/tenant/community`): `PUT /threads/{id}` and `PUT /replies/{id}` edit a post and keep the old wording; `GET …/history` shows those earlier versions to the author and moderators. `POST /threads/{id}/attachments` (multipart `file`, optional `replyId`; 5 per post), `GET` and `DELETE /attachments/{id}`.
+- Attachments are limited to 25 MB and exclude executable and web-page file types.
 
 ## Phase 5 operations endpoints
 
@@ -211,12 +250,19 @@ AI output is a draft until an authorized teacher or administrator approves it. T
 
 An organization is always known before anyone signs in. The app runs in one of two modes, decided by the address it is opened at (`GET /api/v1/public/site?host=...`):
 
-- **Organization website.** The address belongs to one organization, so its landing page is the home page and sign-in never asks for the organization. An address belongs to an organization when the platform operator gives it one (`PUT /api/v1/platform/tenants/{slug}/domains` with `{ "host": "learn.school.edu" }`, `X-Platform-Key` required; `GET` lists and `DELETE .../domains/{host}` removes), or when it is a subdomain of the platform (`school.platform.com` is `school`; addresses listed in `Tenancy__PortalHosts`, and `www`, are excluded). A single-organization install can set `Public__DefaultTenantSlug=acme` so every address shows that organization. Point the custom domain’s DNS at the same app, with TLS.
+- **Organization website.** The address belongs to one organization, so its landing page is the home page and sign-in never asks for the organization. An address belongs to an organization when the platform operator gives it one (`PUT /api/v1/platform/tenants/{slug}/domains` with `{ "host": "learn.school.edu" }`, `X-Platform-Key` required; `GET` lists and `DELETE .../domains/{host}` removes), or when it is a subdomain of the platform (`school.platform.com` is `school`; addresses listed in `Tenancy__PortalHosts`, and `www`, are excluded). A single-organization install can set `Public__DefaultTenantSlug=acme` so every address shows that organization. Point the custom domain’s DNS at the same app, with TLS. The demo seed script gives Acme `http://acme.localhost:5173` (browsers resolve `*.localhost` to your machine), while `http://localhost:5173` stays the shared portal that asks for an organization. An organization address is a small website: Home, Courses (a catalog with search, category and sort filters kept in the address), a page for each course, and About, at `#/`, `#/courses?category=…&q=…&sort=…`, `#/course/{id}` and `#/about`.
 - **Shared portal.** Any other address is the portal: visitors type their organization to sign in, or to preview its courses (also `/?org=acme`); the browser remembers the last one.
 
 Each organization has a public page with courses to browse and search, and an Apply form that needs no account.
 
 Staff control the page under Administration → **Landing page** (headline, banners, course rows, reasons, numbers, stories, FAQ, footer) and handle applications under Courses → **Applications**: approving one sends a course invitation. Set `App__PublicUrl` so invitation links point at your site.
+
+## Video library: uploads, study tools and organizing
+
+- **Uploading in pieces.** A video is sent as pieces (`Videos:ChunkMegabytes`, default 8) and joined at the end, so a lost connection or a closed tab does not start the upload over: choosing the same file again carries on from the pieces already stored. A piece that fails is tried again a few times. The first piece shows what the file really is, so a file that is not a video is refused at once; the joined file is checked like any upload (virus scanner, bucket). Unfinished uploads are cleared after `Videos:UploadExpiryHours` (default 48). `Videos:MaxMegabytes` still limits one video and `Videos:QuotaMegabytes` (default none) limits what an organization may keep in total.
+- **Watching.** Playback speed (remembered), picture in picture, and keys: space or K play and pause, J and L skip 10 seconds, the arrow keys 5, `<` and `>` change the speed, M mutes, F is full screen, 0–9 jump through the video. Staff give a video chapters (one line each, `2:30 The main idea`), shown to learners as an outline that follows playback. Learners keep notes and bookmarks at moments of a video; only they can see them.
+- **In lessons.** A video block whose file is a library video plays in the library's player (streaming, captions, resume, chapters and notes) and counts as watched. In the lesson's content editor, "Complete this lesson when its videos have been watched" makes the lesson complete by itself, with course progress, completion and points following, once the learner has finished every library video in it. The setting belongs to the lesson's version like all content.
+- **Organizing.** Tags (up to 10 a video), search that also looks in tags, filters for tag and state, five orders, select several and delete.
 
 ## Video streaming and AI
 
@@ -244,6 +290,13 @@ LiveKit__Egress__ContainerPath=/out                # Local: the same folder as E
 ```
 
 The host gives recording consent, then presses Start recording in the class's Recording tab once someone is in the room (Stop recording ends it; closing the class stops it too). The class must be linked to a course. The browser test for this runs with `E2E_EGRESS=1` after `scripts/livekit-dev.ps1`, and is skipped otherwise.
+
+### Classes that run themselves
+
+- **Webhook.** Point LiveKit at `POST /api/v1/integrations/livekit/webhook` (LiveKit's `webhook:` setting, with the organization's API key; `scripts/livekit-dev.ps1` does this). Each call is checked against that organization's own LiveKit secret. LiveKit then tells this system who joined and left, so attendance and the class's Live status come from the room itself, and a finished recording is brought in the moment it ends instead of at the next check.
+- **Mute others.** The host and staff see a mute button on everyone's picture and "Mute everyone else" in the room (`POST .../sessions/{id}/mute/{userId}` and `.../mute-all`). It switches microphones off; people can switch theirs on again. Raised hands are shown on pictures and in the class's Chat tab, where staff put them down.
+- **Each person on their own.** With `LiveKit__Egress__SeparateTracks=true`, everyone in the room while the class is recorded (and anyone who arrives later) is also recorded on their own. Each finished track is saved as a course file; staff list them under the Recording tab (`GET .../recording/tracks`).
+- **Start and stop with the class.** Scheduling a LiveKit class linked to a course offers "Record this class automatically": the host's agreement to recording is given there, recording starts when the first person is in the room and stops when the class ends. A background check (every 30 seconds; `LiveKit__Automation__WorkerEnabled=false` turns it off) puts a class live at its start time and closes it after its end plus `LiveKit__Automation__CloseGraceMinutes` (default 15): the recording is stopped, the room closed and anyone still marked present marked as having left.
 
 ## Try LiveKit classes locally
 

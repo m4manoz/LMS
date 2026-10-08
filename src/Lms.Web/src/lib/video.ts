@@ -19,6 +19,8 @@ export type VideoItem = {
   myProgress: VideoProgress | null
   hasStreaming?: boolean
   posterUrl?: string | null
+  /** Words staff group videos by, lowercase. */
+  tags?: string[]
 }
 
 export type PlaybackLink = { kind: 'direct' | 'stream' | 'hls' | 'external'; url: string; expiresAtUtc: string | null; embeddable: boolean; fallbackUrl?: string | null; captionsUrl?: string | null; captionsLanguage?: string | null }

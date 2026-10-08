@@ -12,24 +12,38 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { ApiError, apiRequest } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
-import { uploadWithProgress } from '@/lib/upload'
+import { uploadVideoInPieces } from '@/lib/pieceUpload'
 import { formatBytes, formatDuration, progressLabel, readVideoDuration, typeLabel, type VideoItem } from '@/lib/video'
 import { clock, type SearchHit, type Transcript } from '@/lib/videoAi'
 import { InsightsManager, StudyAids, TranscriptManager, TranscriptView } from './VideoAiPanels'
+import { ChapterList, ChaptersEditor, VideoNotes } from './VideoStudyPanels'
 
 type Course = { id: string; code: string; title: string; status: string }
 type CourseOutline = { course: Course; draftVersion?: unknown; viewingDraft?: boolean; modules: { id: string; title: string; lessons: { id: string; title: string }[] }[] }
-type Usage = { count: number; totalBytes: number }
+type Usage = { count: number; totalBytes: number; quotaBytes?: number | null }
 type Analytics = { eligibleLearners: number; viewers: number; completed: number; plays: number; watchedSeconds: number; averageWatchedPercent: number | null; durationSeconds: number | null; funnel: { percent: number; viewers: number }[] }
 
 const TYPE_FILTERS = [['All', 'All'], ['Uploaded', 'Uploaded'], ['LiveRecording', 'Class recordings'], ['External', 'Linked']] as const
 const readError = (exception: unknown, fallback: string) => (exception instanceof ApiError ? exception.message : fallback)
 
-/** Search, course and type narrowing of the list on screen. */
-export function filterVideos(videos: VideoItem[], search: string, courseId: string, type: string): VideoItem[] {
+export type VideoSort = 'newest' | 'oldest' | 'title' | 'longest' | 'largest'
+export const SORTS: [VideoSort, string][] = [['newest', 'Newest first'], ['oldest', 'Oldest first'], ['title', 'Title A–Z'], ['longest', 'Longest first'], ['largest', 'Largest first']]
+const STATUS_FILTERS = [['All', 'Any state'], ['Ready', 'Ready'], ['Processing', 'Converting'], ['Failed', 'Failed']] as const
+
+/** Search, course, type, tag and state narrowing of the list on screen, in the order chosen (newest first when none is). */
+export function filterVideos(videos: VideoItem[], search: string, courseId: string, type: string, more: { tag?: string; status?: string; sort?: VideoSort } = {}): VideoItem[] {
   const needle = search.trim().toLowerCase()
-  return videos.filter((video) => (courseId === 'All' || video.courseId === courseId) && (type === 'All' || video.type === type)
-    && (!needle || video.title.toLowerCase().includes(needle) || (video.description ?? '').toLowerCase().includes(needle) || video.courseTitle.toLowerCase().includes(needle)))
+  const found = videos.filter((video) => (courseId === 'All' || video.courseId === courseId) && (type === 'All' || video.type === type)
+    && (!more.tag || (video.tags ?? []).includes(more.tag)) && (!more.status || more.status === 'All' || video.status === more.status)
+    && (!needle || video.title.toLowerCase().includes(needle) || (video.description ?? '').toLowerCase().includes(needle) || video.courseTitle.toLowerCase().includes(needle) || (video.tags ?? []).some((tag) => tag.includes(needle))))
+  const byNewest = (a: VideoItem, b: VideoItem) => b.createdAtUtc.localeCompare(a.createdAtUtc)
+  switch (more.sort ?? 'newest') {
+    case 'oldest': return [...found].sort((a, b) => -byNewest(a, b))
+    case 'title': return [...found].sort((a, b) => a.title.localeCompare(b.title) || byNewest(a, b))
+    case 'longest': return [...found].sort((a, b) => (b.durationSeconds ?? -1) - (a.durationSeconds ?? -1) || byNewest(a, b))
+    case 'largest': return [...found].sort((a, b) => b.sizeBytes - a.sizeBytes || byNewest(a, b))
+    default: return [...found].sort(byNewest)
+  }
 }
 
 /** The first problem with the "Add video" form, or null when it can be sent. */
@@ -53,6 +67,11 @@ export default function VideoLibraryPage() {
   const [search, setSearch] = useState('')
   const [courseFilter, setCourseFilter] = useState('All')
   const [typeFilter, setTypeFilter] = useState('All')
+  const [statusFilter, setStatusFilter] = useState('All')
+  const [tagFilter, setTagFilter] = useState<string | null>(null)
+  const [sort, setSort] = useState<VideoSort>('newest')
+  const [picked, setPicked] = useState<string[]>([])
+  const [busy, setBusy] = useState(false)
   const [selected, setSelected] = useState<VideoItem | null>(null)
   const [adding, setAdding] = useState(false)
   const [hits, setHits] = useState<SearchHit[]>([])
@@ -107,7 +126,32 @@ export default function VideoLibraryPage() {
     for (const video of videos ?? []) seen.set(video.courseId, video.courseTitle)
     return [...seen.entries()].map(([id, title]) => ({ id, title })).sort((a, b) => a.title.localeCompare(b.title))
   }, [videos])
-  const shown = filterVideos(videos ?? [], search, courseFilter, typeFilter)
+  const shown = filterVideos(videos ?? [], search, courseFilter, typeFilter, { tag: tagFilter ?? undefined, status: statusFilter, sort })
+  const tagCounts = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const video of videos ?? []) for (const tag of video.tags ?? []) counts.set(tag, (counts.get(tag) ?? 0) + 1)
+    return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+  }, [videos])
+  // A tag nobody uses any more (after deleting or retagging) must not stay chosen with an empty list.
+  useEffect(() => { if (tagFilter && !tagCounts.some(([tag]) => tag === tagFilter)) setTagFilter(null) }, [tagCounts, tagFilter])
+  const pickedShown = picked.filter((id) => shown.some((video) => video.id === id))
+
+  async function deletePicked() {
+    if (pickedShown.length === 0) return
+    if (!window.confirm(`Delete ${pickedShown.length} video${pickedShown.length === 1 ? '' : 's'}? Learners lose access to ${pickedShown.length === 1 ? 'it' : 'them'}. Lessons that already show ${pickedShown.length === 1 ? 'it' : 'them'} keep working.`)) return
+    setBusy(true); setError(null); setNotice(null)
+    let deleted = 0
+    const failed: string[] = []
+    for (const id of pickedShown) {
+      try { await apiRequest(`/api/v1/tenant/videos/${id}`, { method: 'DELETE' }); deleted += 1 }
+      catch { failed.push((videos ?? []).find((video) => video.id === id)?.title ?? 'a video') }
+    }
+    setPicked(failed.length === 0 ? [] : picked.filter((id) => !pickedShown.includes(id) || failed.includes((videos ?? []).find((video) => video.id === id)?.title ?? '')))
+    if (failed.length > 0) setError(`Could not delete ${failed.join(', ')}.`)
+    if (deleted > 0) setNotice(`${deleted} video${deleted === 1 ? ' was' : 's were'} deleted.`)
+    setBusy(false)
+    await load()
+  }
 
   const replace = (updated: VideoItem) => { setVideos((current) => (current ?? []).map((item) => (item.id === updated.id ? updated : item))); setSelected(updated) }
   const closeAll = () => { setSelected(null); setAdding(false) }
@@ -116,7 +160,7 @@ export default function VideoLibraryPage() {
     <section className="flex flex-col gap-4 text-foreground">
       <PageHeader title="Video library" description={canManage ? 'Upload and manage the videos of your courses, put them in lessons, and see how they are watched.' : 'Watch the videos of the courses you are enrolled in. Playback resumes where you left off.'}
         actions={<>
-          {canManage && usage ? <span className="text-sm text-muted-foreground">{usage.count} video{usage.count === 1 ? '' : 's'} · {formatBytes(usage.totalBytes)} stored</span> : null}
+          {canManage && usage ? <span className="text-sm text-muted-foreground">{usage.count} video{usage.count === 1 ? '' : 's'} · {formatBytes(usage.totalBytes)}{usage.quotaBytes ? ` of ${formatBytes(usage.quotaBytes)}` : ''} stored</span> : null}
           {canManage ? <Button onClick={() => { setAdding(true); setSelected(null); setNotice(null) }}><Plus className="mr-1 h-4 w-4" aria-hidden />Add video</Button> : null}
         </>} />
       {selected || adding ? null : <ErrorBanner message={error} />}
@@ -133,7 +177,29 @@ export default function VideoLibraryPage() {
         <div className="flex flex-wrap gap-1.5" role="group" aria-label="Filter by type">
           {TYPE_FILTERS.map(([value, label]) => <Button key={value} type="button" size="sm" variant={typeFilter === value ? 'secondary' : 'outline'} aria-pressed={typeFilter === value} onClick={() => setTypeFilter(value)}>{label}</Button>)}
         </div>
+        {canManage ? (
+          <Select aria-label="Filter by state" className="w-40" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+            {STATUS_FILTERS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          </Select>
+        ) : null}
+        <Select aria-label="Sort videos" className="w-44" value={sort} onChange={(event) => setSort(event.target.value as VideoSort)}>
+          {SORTS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+        </Select>
       </div>
+
+      {tagCounts.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter by tag">
+          <small className="text-muted-foreground">Tags</small>
+          {tagCounts.slice(0, 30).map(([tag, count]) => <Button key={tag} type="button" size="sm" variant={tagFilter === tag ? 'secondary' : 'outline'} aria-pressed={tagFilter === tag} onClick={() => setTagFilter(tagFilter === tag ? null : tag)}>{tag} <small className="ml-1 text-muted-foreground">{count}</small></Button>)}
+        </div>
+      ) : null}
+
+      {canManage && shown.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-3 text-sm">
+          <label className="flex items-center gap-2"><input type="checkbox" checked={pickedShown.length === shown.length} onChange={(event) => setPicked(event.target.checked ? shown.map((video) => video.id) : [])} />Select all {shown.length}</label>
+          {pickedShown.length > 0 ? <Button type="button" size="sm" variant="softDestructive" disabled={busy} onClick={() => void deletePicked()}>Delete {pickedShown.length} selected</Button> : null}
+        </div>
+      ) : null}
 
       {hits.length > 0 ? (
         <section aria-label="Found in what is said" className="flex flex-col gap-2">
@@ -159,8 +225,9 @@ export default function VideoLibraryPage() {
             return (
               <ListRow key={video.id} selected={video.id === selected?.id} columns="sm:grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,2fr)_150px_80px_90px_130px_auto]">
                 <div className="flex min-w-0 items-center gap-3">
+                  {canManage ? <input type="checkbox" aria-label={`Select ${video.title}`} checked={picked.includes(video.id)} onChange={(event) => setPicked((current) => (event.target.checked ? [...current, video.id] : current.filter((id) => id !== video.id)))} /> : null}
                   <span aria-hidden className="flex h-10 w-14 shrink-0 items-center justify-center overflow-hidden rounded bg-muted text-muted-foreground">{video.posterUrl ? <img src={video.posterUrl} alt="" className="h-full w-full object-cover" /> : <Film className="h-5 w-5" />}</span>
-                  <div className="min-w-0"><strong className="block truncate">{video.title}</strong><small className="text-muted-foreground">{video.courseTitle}</small></div>
+                  <div className="min-w-0"><strong className="block truncate">{video.title}</strong><small className="text-muted-foreground">{video.courseTitle}{(video.tags ?? []).length > 0 ? ` · ${(video.tags ?? []).join(', ')}` : ''}</small></div>
                 </div>
                 <div className="flex flex-wrap gap-1.5"><Badge variant="outline">{typeLabel(video.type)}</Badge>{video.status !== 'Ready' ? <Badge variant={video.status === 'Failed' ? 'destructive' : 'secondary'}>{video.status === 'Processing' ? 'Converting' : video.status}</Badge> : null}</div>
                 <div className="hidden text-muted-foreground md:block"><small className="block">Length</small>{formatDuration(video.durationSeconds)}</div>
@@ -206,13 +273,9 @@ function AddVideoForm({ courses, onDone, onCancel }: { courses: Course[]; onDone
       if (mode === 'link') {
         onDone(await apiRequest<VideoItem>('/api/v1/tenant/videos/external', { method: 'POST', body: JSON.stringify({ courseId, title: title.trim(), description: description.trim() || null, url: url.trim() }) }))
       } else {
-        const form = new FormData()
-        form.set('courseId', courseId); form.set('title', title.trim()); form.set('description', description.trim())
         const seconds = await readVideoDuration(file!)
-        if (seconds) form.set('durationSeconds', String(seconds))
-        form.set('file', file!)
         setProgress(0)
-        onDone(await uploadWithProgress<VideoItem>('/api/v1/tenant/videos', form, setProgress).promise)
+        onDone(await uploadVideoInPieces<VideoItem>(file!, { courseId, title: title.trim(), description: description.trim(), durationSeconds: seconds }, setProgress))
       }
     } catch (exception) { setProblem(readError(exception, 'Unable to add the video.')) }
     finally { setBusy(false); setProgress(null) }
@@ -227,7 +290,7 @@ function AddVideoForm({ courses, onDone, onCancel }: { courses: Course[]; onDone
           <Button type="button" role="radio" aria-checked={mode === 'link'} variant={mode === 'link' ? 'secondary' : 'outline'} onClick={() => setMode('link')}>Link to a video</Button>
         </div>
         {mode === 'upload' ? (
-          <Field id="video-file" label="Video file" required hint="MP4, WebM or OGG. Large videos can take a while: keep this page open until it finishes.">
+          <Field id="video-file" label="Video file" required hint="MP4, WebM or OGG. The video is sent in pieces: if the connection drops or you close the page, choose the same file again to carry on where it stopped.">
             <Input id="video-file" type="file" accept="video/mp4,video/webm,video/ogg" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
           </Field>
         ) : (
@@ -279,6 +342,8 @@ function VideoDetails({ video, canManage, startAt, onChanged, onDeleted }: { vid
     : <VideoNotReady video={video} canManage={canManage} onChanged={onChanged} />
   const reading = ready ? (
     <>
+      {video.type !== 'External' ? <ChapterList videoId={video.id} time={time} onSeek={jump} /> : null}
+      {video.type !== 'External' ? <VideoNotes videoId={video.id} time={time} onSeek={jump} /> : null}
       {transcript?.status === 'Ready' ? <TranscriptView transcript={transcript} time={time} onSeek={jump} /> : null}
       {canManage ? null : <StudyAids video={video} onSeek={jump} />}
     </>
@@ -297,6 +362,7 @@ function VideoDetails({ video, canManage, startAt, onChanged, onDeleted }: { vid
       <Tabs defaultValue="watch">
         <TabsList>
           <TabsTrigger value="watch">Watch</TabsTrigger>
+          <TabsTrigger value="chapters">Chapters</TabsTrigger>
           <TabsTrigger value="transcript">Transcript</TabsTrigger>
           <TabsTrigger value="aids">Study aids</TabsTrigger>
           <TabsTrigger value="details">Details</TabsTrigger>
@@ -304,6 +370,7 @@ function VideoDetails({ video, canManage, startAt, onChanged, onDeleted }: { vid
           <TabsTrigger value="analytics">Analytics</TabsTrigger>
         </TabsList>
         <TabsContent value="watch"><div className="flex flex-col gap-4">{player}{reading}</div></TabsContent>
+        <TabsContent value="chapters"><ChaptersEditor video={video} /></TabsContent>
         <TabsContent value="transcript"><TranscriptManager video={video} transcript={transcript ?? NO_TRANSCRIPT} onChange={setTranscript} /></TabsContent>
         <TabsContent value="aids"><InsightsManager video={video} hasTranscript={transcript?.status === 'Ready'} /></TabsContent>
         <TabsContent value="details"><EditVideo video={video} onChanged={onChanged} onDeleted={onDeleted} /></TabsContent>
@@ -340,6 +407,7 @@ function VideoNotReady({ video, canManage, onChanged }: { video: VideoItem; canM
 function EditVideo({ video, onChanged, onDeleted }: { video: VideoItem; onChanged: (video: VideoItem) => void; onDeleted: () => void }) {
   const [title, setTitle] = useState(video.title)
   const [description, setDescription] = useState(video.description ?? '')
+  const [tags, setTags] = useState((video.tags ?? []).join(', '))
   const [problem, setProblem] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -349,7 +417,7 @@ function EditVideo({ video, onChanged, onDeleted }: { video: VideoItem; onChange
     setNotice(null)
     if (!title.trim()) return setProblem('Give the video a title.')
     setProblem(null); setBusy(true)
-    try { onChanged(await apiRequest<VideoItem>(`/api/v1/tenant/videos/${video.id}`, { method: 'PUT', body: JSON.stringify({ title: title.trim(), description: description.trim() || null }) })); setNotice('Saved.') }
+    try { onChanged(await apiRequest<VideoItem>(`/api/v1/tenant/videos/${video.id}`, { method: 'PUT', body: JSON.stringify({ title: title.trim(), description: description.trim() || null, tags: tags.split(',').map((tag) => tag.trim()).filter(Boolean) }) })); setNotice('Saved.') }
     catch (exception) { setProblem(readError(exception, 'Unable to save the video.')) }
     finally { setBusy(false) }
   }
@@ -375,6 +443,7 @@ function EditVideo({ video, onChanged, onDeleted }: { video: VideoItem; onChange
       <FormSection title="About the video">
         <Field id="edit-video-title" label="Title" required><Input id="edit-video-title" maxLength={250} value={title} onChange={(event) => setTitle(event.target.value)} /></Field>
         <Field id="edit-video-description" label="Description"><Textarea id="edit-video-description" rows={3} maxLength={2000} value={description} onChange={(event) => setDescription(event.target.value)} /></Field>
+        <Field id="edit-video-tags" label="Tags" hint="Words that group videos, separated by commas, such as week 1, calculus. Up to 10."><Input id="edit-video-tags" value={tags} onChange={(event) => setTags(event.target.value)} /></Field>
       </FormSection>
       {video.type !== 'External' ? (
         <FormSection title="Streaming" description={video.hasStreaming ? 'Prepared for streaming: it starts quickly and seeking is smooth, and a poster image is shown.' : 'Not converted. It plays as the original file. Converting makes it stream in small pieces and adds a poster image.'}>

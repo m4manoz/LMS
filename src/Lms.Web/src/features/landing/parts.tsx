@@ -2,10 +2,29 @@ import { useEffect, useRef, useState } from 'react'
 import { Award, BookOpen, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, Clock, Globe, GraduationCap, Laptop, ShieldCheck, Star, UserRound, Users, Video } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import type { LandingBanner, LandingFaq, LandingFooterGroup, PublicCourse } from '@/lib/publicApi'
+import { landingImageUrl, type LandingBanner, type LandingFaq, type LandingFooterGroup, type PublicCourse } from '@/lib/publicApi'
 
 const icons = { video: Video, book: BookOpen, award: Award, users: Users, clock: Clock, shield: ShieldCheck, globe: Globe, laptop: Laptop, check: CheckCircle2, star: Star } as const
 export const iconFor = (name: string) => (icons as Record<string, typeof Star>)[name] ?? Star
+
+/** Five stars filled up to the rating (to the nearest half). Decoration only: the words that go with it carry the meaning. */
+export function Stars({ value, className }: { value: number; className?: string }) {
+  return (
+    <span className={cn('inline-flex', className)} aria-hidden>
+      {[1, 2, 3, 4, 5].map((position) => <Star key={position} className={cn('h-3.5 w-3.5', value >= position - 0.25 ? 'fill-amber-400 text-amber-400' : 'text-muted-foreground/40')} />)}
+    </span>
+  )
+}
+
+/** "★★★★☆ 4.2 (31)" with a spoken version; nothing at all for a course nobody has rated. */
+export function RatingLabel({ average, count }: { average: number | null | undefined; count: number | undefined }) {
+  if (!count || average === null || average === undefined) return null
+  return (
+    <span className="inline-flex items-center gap-1 text-xs text-muted-foreground" aria-label={`Rated ${average.toFixed(1)} out of 5 by ${count} ${count === 1 ? 'learner' : 'learners'}`}>
+      <Stars value={average} /><span className="font-medium text-foreground">{average.toFixed(1)}</span><span>({count})</span>
+    </span>
+  )
+}
 
 const covers = [
   'from-sky-500 to-indigo-600', 'from-emerald-500 to-teal-700', 'from-violet-500 to-fuchsia-600', 'from-amber-500 to-orange-600',
@@ -49,6 +68,7 @@ export function CourseCard({ course, onOpen }: { course: PublicCourse; onOpen: (
       <div className="flex flex-1 flex-col gap-1.5 p-4">
         <span className="text-xs text-muted-foreground">{course.teacher ?? 'Course'}</span>
         <strong className="line-clamp-2 text-base leading-snug group-hover:text-primary">{course.title}</strong>
+        <RatingLabel average={course.ratingAverage} count={course.ratingCount} />
         {course.summary ? <p className="line-clamp-2 text-sm text-muted-foreground">{course.summary}</p> : null}
         <div className="mt-auto flex flex-wrap items-center gap-x-3 gap-y-1 pt-2 text-xs text-muted-foreground">
           <span className="inline-flex items-center gap-1"><CalendarDays className="h-3.5 w-3.5" aria-hidden />{whenLabel(course)}</span>
@@ -80,7 +100,7 @@ export function CourseRow({ title, subtitle, courses, onOpen }: { title: string;
 }
 
 /** The banners at the top: one at a time with arrows and dots; they turn over by themselves unless the visitor asked for less motion or is using them. */
-export function BannerCarousel({ banners, onLink }: { banners: LandingBanner[]; onLink: (link: string) => void }) {
+export function BannerCarousel({ banners, onLink, slug }: { banners: LandingBanner[]; onLink: (link: string) => void; slug?: string }) {
   const [index, setIndex] = useState(0)
   const [paused, setPaused] = useState(false)
   const count = banners.length
@@ -96,10 +116,13 @@ export function BannerCarousel({ banners, onLink }: { banners: LandingBanner[]; 
   return (
     <section aria-label="Featured" aria-roledescription="carousel" className="relative" onMouseEnter={() => setPaused(true)} onMouseLeave={() => setPaused(false)} onFocus={() => setPaused(true)} onBlur={() => setPaused(false)}>
       <div className={cn('rounded-2xl bg-gradient-to-br p-8 text-white sm:p-10', bannerThemes[banner.theme] ?? bannerThemes.blue)} aria-live={paused ? 'polite' : 'off'} aria-label={`${at + 1} of ${count}`} role="group">
-        <div className="flex max-w-2xl flex-col items-start gap-3">
-          <h2 className="text-2xl font-bold leading-tight sm:text-3xl">{banner.title}</h2>
-          {banner.text ? <p className="text-base text-white/90">{banner.text}</p> : null}
-          {banner.buttonLabel && banner.link ? <Button type="button" className="mt-2 bg-white text-slate-900 hover:bg-white/90" onClick={() => onLink(banner.link)}>{banner.buttonLabel}</Button> : null}
+        <div className="flex items-center justify-between gap-8">
+          <div className="flex max-w-2xl flex-col items-start gap-3">
+            <h2 className="text-2xl font-bold leading-tight sm:text-3xl">{banner.title}</h2>
+            {banner.text ? <p className="text-base text-white/90">{banner.text}</p> : null}
+            {banner.buttonLabel && banner.link ? <Button type="button" className="mt-2 bg-white text-slate-900 hover:bg-white/90" onClick={() => onLink(banner.link)}>{banner.buttonLabel}</Button> : null}
+          </div>
+          {banner.imageId && slug ? <img src={landingImageUrl(slug, banner.imageId)} alt="" loading="lazy" className="hidden h-40 w-auto max-w-[40%] shrink-0 rounded-xl object-cover sm:block" /> : null}
         </div>
       </div>
       {count > 1 ? (
@@ -130,12 +153,14 @@ export function FaqList({ items }: { items: LandingFaq[] }) {
   )
 }
 
-export function SiteFooter({ name, about, groups, copyright, onLink }: { name: string; about: string; groups: LandingFooterGroup[]; copyright: string; onLink: (link: string) => void }) {
+export function SiteFooter({ name, about, groups, copyright, onLink, logoUrl }: { name: string; about: string; groups: LandingFooterGroup[]; copyright: string; onLink: (link: string) => void; logoUrl?: string }) {
   return (
     <footer className="border-t border-border bg-muted/30">
       <div className="mx-auto flex max-w-6xl flex-wrap gap-x-12 gap-y-8 px-4 py-10">
         <div className="flex min-w-60 flex-1 basis-72 flex-col gap-2">
-          <span className="flex items-center gap-2 font-semibold"><span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground"><GraduationCap className="h-4 w-4" /></span>{name}</span>
+          <span className="flex items-center gap-2 font-semibold">
+            {logoUrl ? <img src={logoUrl} alt="" className="h-8 w-auto max-w-[8rem] rounded object-contain" /> : <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground"><GraduationCap className="h-4 w-4" /></span>}{name}
+          </span>
           {about ? <p className="max-w-sm text-sm text-muted-foreground">{about}</p> : null}
         </div>
         {groups.map((group) => (

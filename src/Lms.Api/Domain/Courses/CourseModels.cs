@@ -84,6 +84,8 @@ public sealed class CourseLesson
     public string? Summary { get; set; }
     public string? ContentHtml { get; set; }
     public int DisplayOrder { get; set; }
+    /// <summary>The lesson counts as completed once the learner has watched every video in it (videos from the library).</summary>
+    public bool CompleteWhenVideosWatched { get; set; }
 }
 
 public sealed class CourseTopic

@@ -44,6 +44,7 @@ public static class CourseEndpoints
         tenant.MapPut("/{courseId:guid}/modules/{moduleId:guid}", UpdateModuleAsync).RequireAuthorization("tenant.course.manage");
         tenant.MapPost("/{courseId:guid}/modules/{moduleId:guid}/lessons", CreateLessonAsync).RequireAuthorization("tenant.course.manage");
         tenant.MapPut("/{courseId:guid}/lessons/{lessonId:guid}", UpdateLessonAsync).RequireAuthorization("tenant.course.manage");
+        tenant.MapPut("/{courseId:guid}/lessons/{lessonId:guid}/completion-rule", SetLessonCompletionRuleAsync).RequireAuthorization("tenant.course.manage");
         tenant.MapPost("/{courseId:guid}/assets", UploadAssetAsync).RequireAuthorization("tenant.course.manage");
         tenant.MapGet("/{courseId:guid}/assets/{assetId:guid}", DownloadAssetAsync).RequireAuthorization("tenant.course.read");
         tenant.MapGet("/{courseId:guid}/assets/{assetId:guid}/link", AssetLinkAsync).RequireAuthorization("tenant.course.read");
@@ -387,6 +388,18 @@ public static class CourseEndpoints
         return Results.Ok(lesson);
     }
 
+    /// <summary>Whether watching the lesson's videos completes the lesson. Like all content, it can only be changed in the version that can be edited.</summary>
+    private static async Task<IResult> SetLessonCompletionRuleAsync(LmsDbContext db, CourseVersioningService versioning, Guid courseId, Guid lessonId, LessonCompletionRuleRequest request, CancellationToken cancellationToken)
+    {
+        var course = await db.Courses.SingleOrDefaultAsync(item => item.Id == courseId, cancellationToken);
+        var lesson = await db.CourseLessons.SingleOrDefaultAsync(item => item.Id == lessonId, cancellationToken);
+        if (course is null || lesson is null) return Results.NotFound();
+        var lessonVersionId = await db.CourseModules.Where(item => item.Id == lesson.CourseModuleId).Select(item => (Guid?)item.CourseVersionId).SingleOrDefaultAsync(cancellationToken);
+        if (lessonVersionId is null || await versioning.EditableVersionIdAsync(db, course, cancellationToken) != lessonVersionId) return Results.Conflict(new { message = NotEditable });
+        lesson.CompleteWhenVideosWatched = request.CompleteWhenVideosWatched;
+        await db.SaveChangesAsync(cancellationToken);
+        return Results.Ok(new { lessonId, completeWhenVideosWatched = lesson.CompleteWhenVideosWatched });
+    }
     // ---------- removing and ordering content (only in the version that can be edited) ----------
     private static async Task<IResult> DeleteLessonAsync(LmsDbContext db, CourseVersioningService versioning, Guid courseId, Guid lessonId, CancellationToken cancellationToken)
     {
@@ -557,7 +570,7 @@ public static class CourseEndpoints
         return new CourseDetailResponse(
             new CourseSummaryResponse(course.Id, course.Code, course.Slug, course.Title, course.Description, course.Status.ToString(), course.StartDateAd, course.EndDateAd, course.CurrentVersionId, course.PublishedAtUtc, course.Capacity, course.CategoryId, categoryName),
             version is null ? null : new CourseVersionResponse(version.Id, version.VersionNumber, version.Status.ToString(), version.ChangeSummary, version.CreatedAtUtc, version.PublishedAtUtc),
-            modules.Select(module => new CourseModuleResponse(module.Id, module.Title, module.Description, module.DisplayOrder, lessons.Where(lesson => lesson.CourseModuleId == module.Id).Select(lesson => new CourseLessonResponse(lesson.Id, lesson.Title, lesson.Summary, lesson.ContentHtml, lesson.DisplayOrder)).ToArray())).ToArray(),
+            modules.Select(module => new CourseModuleResponse(module.Id, module.Title, module.Description, module.DisplayOrder, lessons.Where(lesson => lesson.CourseModuleId == module.Id).Select(lesson => new CourseLessonResponse(lesson.Id, lesson.Title, lesson.Summary, lesson.ContentHtml, lesson.DisplayOrder, lesson.CompleteWhenVideosWatched)).ToArray())).ToArray(),
             workflow,
             draftVersion is null ? null : new CourseVersionResponse(draftVersion.Id, draftVersion.VersionNumber, draftVersion.Status.ToString(), draftVersion.ChangeSummary, draftVersion.CreatedAtUtc, draftVersion.PublishedAtUtc),
             draft && draftVersion is not null);
@@ -611,7 +624,8 @@ public sealed record CreateLessonRequest(string Title, string? Summary = null, s
 public sealed record UpdateLessonRequest(string Title, string? Summary = null, string? ContentHtml = null, int? DisplayOrder = null);
 public sealed record CourseSummaryResponse(Guid Id, string Code, string Slug, string Title, string? Description, string Status, DateOnly? StartDateAd, DateOnly? EndDateAd, Guid? CurrentVersionId, DateTimeOffset? PublishedAtUtc, int? Capacity = null, Guid? CategoryId = null, string? CategoryName = null);
 public sealed record CourseVersionResponse(Guid Id, int VersionNumber, string Status, string? ChangeSummary, DateTimeOffset CreatedAtUtc, DateTimeOffset? PublishedAtUtc);
-public sealed record CourseLessonResponse(Guid Id, string Title, string? Summary, string? ContentHtml, int DisplayOrder);
+public sealed record CourseLessonResponse(Guid Id, string Title, string? Summary, string? ContentHtml, int DisplayOrder, bool CompleteWhenVideosWatched = false);
+public sealed record LessonCompletionRuleRequest(bool CompleteWhenVideosWatched);
 public sealed record CourseModuleResponse(Guid Id, string Title, string? Description, int DisplayOrder, CourseLessonResponse[] Lessons);
 public sealed record CourseDetailResponse(CourseSummaryResponse Course, CourseVersionResponse? CurrentVersion, CourseModuleResponse[] Modules, CourseWorkflowEventResponse[] Workflow, CourseVersionResponse? DraftVersion = null, bool ViewingDraft = false);
 public sealed record StartVersionRequest(string? ChangeSummary);

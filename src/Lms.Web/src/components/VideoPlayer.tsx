@@ -2,9 +2,15 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { ApiError, apiRequest } from '@/lib/api'
 import { formatDuration, qualityLabel, resumePoint, type PlaybackLink, type VideoItem } from '@/lib/video'
+import { SPEEDS, shortcutFor, speedLabel, stepSpeed, typingTarget } from '@/lib/videoStudy'
 
 /** How often playback is reported while a video plays (seconds). Pauses, endings and leaving the page report straight away. */
 export const REPORT_EVERY_SECONDS = 15
+
+const SPEED_KEY = 'lms.video.speed'
+function savedSpeed(): number {
+  try { const value = Number(window.localStorage.getItem(SPEED_KEY)); return (SPEEDS as readonly number[]).includes(value) ? value : 1 } catch { return 1 }
+}
 
 type Props = {
   video: VideoItem
@@ -27,6 +33,8 @@ export default function VideoPlayer({ video, onProgress, seek, onTime, onSeekDon
   const [resumed, setResumed] = useState<number | null>(null)
   const [levels, setLevels] = useState<(number | undefined)[]>([])
   const [quality, setQuality] = useState(-1)                          // -1 lets the player choose by connection speed
+  const [speed, setSpeed] = useState(savedSpeed)                      // the same speed is kept for the next video
+  const [pictureInPicture, setPictureInPicture] = useState(false)
   const streaming = useRef<{ destroy: () => void; currentLevel: number } | null>(null)
   const element = useRef<HTMLVideoElement>(null)
   const refreshes = useRef(0)
@@ -93,6 +101,52 @@ export default function VideoPlayer({ video, onProgress, seek, onTime, onSeekDon
     return () => { cancelled = true; hls?.destroy(); streaming.current = null }
   }, [streamUrl, fallbackUrl])
 
+  // The chosen speed applies to whatever is playing, including after the link is renewed or the quality changes.
+  const applySpeed = useCallback(() => { if (element.current) element.current.playbackRate = speed }, [speed])
+  useEffect(() => { applySpeed() }, [applySpeed, link])
+  function chooseSpeed(value: number) {
+    setSpeed(value)
+    try { window.localStorage.setItem(SPEED_KEY, String(value)) } catch { /* the speed just is not remembered */ }
+  }
+
+  async function togglePictureInPicture() {
+    const player = element.current
+    if (!player) return
+    try {
+      if (document.pictureInPictureElement) await document.exitPictureInPicture()
+      else await player.requestPictureInPicture()
+    } catch { /* the browser refused (a video that is not playing yet, a policy): nothing to do */ }
+  }
+  useEffect(() => {
+    const player = element.current
+    if (!player) return
+    const entered = () => setPictureInPicture(true)
+    const left = () => setPictureInPicture(false)
+    player.addEventListener('enterpictureinpicture', entered)
+    player.addEventListener('leavepictureinpicture', left)
+    return () => { player.removeEventListener('enterpictureinpicture', entered); player.removeEventListener('leavepictureinpicture', left) }
+  }, [link])
+
+  /** Keys work while the player has focus; keys typed into a field (a note, a search) are left to the field. */
+  function onKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    const player = element.current
+    if (!player || typingTarget(event.target)) return
+    const action = shortcutFor(event)
+    if (!action) return
+    event.preventDefault()
+    const length = Number.isFinite(player.duration) ? player.duration : duration.current ?? 0
+    switch (action.type) {
+      case 'toggle': if (player.paused) void player.play().catch(() => undefined); else player.pause(); break
+      case 'skip': player.currentTime = Math.min(length || Infinity, Math.max(0, player.currentTime + action.seconds)); break
+      case 'speed': chooseSpeed(stepSpeed(speed, action.direction)); break
+      case 'mute': player.muted = !player.muted; break
+      case 'fullscreen': if (document.fullscreenElement) void document.exitFullscreen(); else void player.requestFullscreen?.().catch(() => undefined); break
+      case 'jump': if (length) player.currentTime = length * action.fraction; break
+      case 'start': player.currentTime = 0; break
+      case 'end': if (length) player.currentTime = Math.max(0, length - 1); break
+    }
+  }
+
   function chooseQuality(value: number) {
     setQuality(value)
     if (streaming.current) streaming.current.currentLevel = value
@@ -123,6 +177,7 @@ export default function VideoPlayer({ video, onProgress, seek, onTime, onSeekDon
   function onLoadedMetadata() {
     const player = element.current
     if (!player) return
+    player.playbackRate = speed
     if (Number.isFinite(player.duration)) duration.current = Math.round(player.duration)
     if (pendingSeek.current !== null) { applySeek(player); return }
     const point = resumePoint(video.myProgress?.lastPositionSeconds, duration.current)
@@ -164,11 +219,18 @@ export default function VideoPlayer({ video, onProgress, seek, onTime, onSeekDon
   }
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-2" role="group" aria-label="Video player" aria-keyshortcuts="Space K J L ArrowLeft ArrowRight M F < >" tabIndex={0} onKeyDown={onKeyDown}>
       <video ref={element} src={link.kind === 'hls' ? undefined : link.url} poster={video.posterUrl ?? undefined} controls preload="metadata" className="max-h-[32rem] w-full rounded-md border border-border bg-black"
         onLoadedMetadata={onLoadedMetadata} onTimeUpdate={onTimeUpdate} onPause={() => void report()} onEnded={() => void report(true)} onError={() => void onError()}>
         {link.captionsUrl ? <track kind="captions" src={link.captionsUrl} srcLang={link.captionsLanguage ?? 'und'} label="Transcript" /> : null}
       </video>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+      <label className="flex items-center gap-2 text-sm text-muted-foreground">Speed
+        <select aria-label="Playback speed" className="rounded-md border border-input bg-background px-2 py-1 text-foreground" value={speed} onChange={(event) => chooseSpeed(Number(event.target.value))}>
+          {SPEEDS.map((value) => <option key={value} value={value}>{speedLabel(value)}</option>)}
+        </select>
+      </label>
+      {typeof document !== 'undefined' && document.pictureInPictureEnabled ? <Button type="button" variant="outline" size="sm" aria-pressed={pictureInPicture} onClick={() => void togglePictureInPicture()}>{pictureInPicture ? 'Leave picture in picture' : 'Picture in picture'}</Button> : null}
       {levels.length > 1 ? (
         <label className="flex items-center gap-2 text-sm text-muted-foreground">Quality
           <select aria-label="Quality" className="rounded-md border border-input bg-background px-2 py-1 text-foreground" value={quality} onChange={(event) => chooseQuality(Number(event.target.value))}>
@@ -177,6 +239,8 @@ export default function VideoPlayer({ video, onProgress, seek, onTime, onSeekDon
           </select>
         </label>
       ) : null}
+      </div>
+      <small className="text-muted-foreground">Keys: space or K play and pause, J and L skip 10 seconds, the arrow keys 5, &lt; and &gt; change the speed, M mutes, F is full screen, 0–9 jump through the video.</small>
       {resumed !== null ? <small className="text-muted-foreground">Resumed from {formatDuration(resumed)}.</small> : null}
     </div>
   )

@@ -16,7 +16,7 @@ export type Course = {
   publishedAtUtc?: string | null
 }
 
-export type Lesson = { id: string; title: string; summary?: string | null; contentHtml?: string | null; displayOrder: number }
+export type Lesson = { id: string; title: string; summary?: string | null; contentHtml?: string | null; displayOrder: number; completeWhenVideosWatched?: boolean }
 export type Module = { id: string; title: string; description?: string | null; displayOrder: number; lessons: Lesson[] }
 export type CourseDetail = {
   course: Course

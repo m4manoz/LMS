@@ -62,7 +62,7 @@ public sealed class CourseVersioningService(NotificationService notifications, G
         var lessonCopies = lessons.ToDictionary(item => item.Id, item => new CourseLesson
         {
             Id = Guid.NewGuid(), TenantId = item.TenantId, CourseModuleId = moduleCopies[item.CourseModuleId].Id, SourceLessonId = item.Id,
-            Title = item.Title, Summary = item.Summary, ContentHtml = item.ContentHtml, DisplayOrder = item.DisplayOrder
+            Title = item.Title, Summary = item.Summary, ContentHtml = item.ContentHtml, DisplayOrder = item.DisplayOrder, CompleteWhenVideosWatched = item.CompleteWhenVideosWatched
         });
         db.CourseModules.AddRange(moduleCopies.Values);
         db.CourseLessons.AddRange(lessonCopies.Values);
