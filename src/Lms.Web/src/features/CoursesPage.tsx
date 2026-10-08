@@ -1,9 +1,10 @@
 import { useEffect, useState, useRef } from 'react'
-import { ArrowDown, ArrowUp, Check, CircleDashed, Plus } from 'lucide-react'
+import { ArrowDown, ArrowUp, Plus } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import SidePanel from '../components/SidePanel'
 import { ErrorBanner, NoticeBanner } from '@/components/form'
 import CourseContentEditor from './CourseContentEditor'
+import { ReadinessChecklist } from './ReadinessChecklist'
 import CourseEnrollmentPanel from './CourseEnrollmentPanel'
 import CourseReviewsPanel from './CourseReviewsPanel'
 import CourseLiveClasses from './CourseLiveClasses'
@@ -248,16 +249,7 @@ export default function CoursesPage({ mode = 'catalog', onOpenClass }: { mode?: 
                 {authoring && status === 'Draft' ? (
                   <Card>
                     <CardHeader><CardTitle>Ready for review?</CardTitle><CardDescription>{ready ? 'Everything required is in place. You can submit it for review.' : 'Finish the required items before submitting.'}</CardDescription></CardHeader>
-                    <CardContent>
-                      <ul className="flex flex-col gap-2 text-sm">
-                        {checks.map((check) => (
-                          <li key={check.id} className="flex items-start gap-2">
-                            {check.ok ? <Check className="mt-0.5 h-4 w-4 text-emerald-400" aria-label="Done" /> : <CircleDashed className="mt-0.5 h-4 w-4 text-muted-foreground" aria-label="To do" />}
-                            <span><span className={check.ok ? 'text-muted-foreground line-through' : ''}>{check.label}</span>{check.required ? null : <small className="ml-1 text-muted-foreground">(optional)</small>}{check.ok ? null : <small className="block text-muted-foreground">{check.hint}</small>}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    </CardContent>
+                    <CardContent><ReadinessChecklist checks={checks} onGo={setTab} /></CardContent>
                   </Card>
                 ) : null}
               </TabsContent>

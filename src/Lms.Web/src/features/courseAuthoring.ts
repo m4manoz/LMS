@@ -43,15 +43,16 @@ export function filterCourses<T extends Pick<Course, 'title' | 'code' | 'status'
   return courses.filter((course) => (status === 'All' || course.status === status) && (category === 'All' || (category === 'none' ? !course.categoryId : course.categoryId === category)) && (!needle || course.title.toLowerCase().includes(needle) || course.code.toLowerCase().includes(needle)))
 }
 
-export type Check = { id: string; label: string; ok: boolean; hint: string; required: boolean }
+/** tab: where in the course the item is finished. */
+export type Check = { id: string; label: string; ok: boolean; hint: string; required: boolean; tab?: 'outline' | 'details' }
 
 /** What is still missing before a course is worth sending for review. */
 export function readiness(modules: Module[], description?: string | null): Check[] {
   const empty = modules.filter((module) => module.lessons.length === 0)
   return [
-    { id: 'modules', label: 'Has at least one module', ok: modules.length > 0, hint: 'Add a module on the Outline tab.', required: true },
-    { id: 'lessons', label: 'Every module has a lesson', ok: modules.length > 0 && empty.length === 0, hint: empty.length > 0 ? `Add a lesson to ${empty.map((module) => `“${module.title}”`).join(', ')}.` : 'Add modules first.', required: true },
-    { id: 'description', label: 'Has a description', ok: !!description?.trim(), hint: 'Learners see this in the catalog. Add it on the Details tab.', required: false },
+    { id: 'modules', label: 'Has at least one module', ok: modules.length > 0, hint: 'Add a module on the Outline tab.', required: true, tab: 'outline' },
+    { id: 'lessons', label: 'Every module has a lesson', ok: modules.length > 0 && empty.length === 0, hint: empty.length > 0 ? `Add a lesson to ${empty.map((module) => `“${module.title}”`).join(', ')}.` : 'Add modules first.', required: true, tab: 'outline' },
+    { id: 'description', label: 'Has a description', ok: !!description?.trim(), hint: 'Learners see this in the catalog. Add it on the Details tab.', required: false, tab: 'details' },
   ]
 }
 
