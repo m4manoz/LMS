@@ -34,6 +34,8 @@ services:
       DataProtection__KeyStoragePath: /data/keys
       Storage__LocalRoot: /data/content-assets
       LiveClasses__FrontendBaseUrl: ${PUBLIC_URL}
+      # The test server is reached by plain ws:// addresses (no domain or certificate yet); production must use wss://.
+      Integrations__AllowInsecureLiveClassHosts: "true"
       Frontend__AllowedOrigins__0: ${PUBLIC_URL}
     volumes:
       - api-data:/data
@@ -43,6 +45,30 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
+
+  # Live classes. Started only when COMPOSE_PROFILES=live is set in .env (see .env.example), so a server without LiveKit settings still deploys.
+  # LIVEKIT_NODE_IP, LIVEKIT_API_KEY and LIVEKIT_API_SECRET must then be set in .env. Its address, key and secret are then entered in the app under Integrations -> Live classes: ws://<server ip>:7880.
+  livekit:
+    image: livekit/livekit-server:latest
+    profiles: ["live"]
+    restart: unless-stopped
+    environment:
+      LIVEKIT_CONFIG: |
+        port: 7880
+        rtc:
+          tcp_port: 7881
+          udp_port: 7882
+          node_ip: ${LIVEKIT_NODE_IP:-127.0.0.1}
+        keys:
+          ${LIVEKIT_API_KEY:-unset}: ${LIVEKIT_API_SECRET:-unset-unset-unset-unset-unset-unset}
+        webhook:
+          api_key: ${LIVEKIT_API_KEY:-unset}
+          urls:
+            - http://api:8080/api/v1/integrations/livekit/webhook
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "7882:7882/udp"
 
   web:
     image: lms-web:${TAG:-latest}
