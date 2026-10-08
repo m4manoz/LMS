@@ -64,7 +64,10 @@ public static class IntegrationEndpoints
         if (provider == LiveClassProviders.LiveKit)
         {
             liveKitUrl = NormalizeLiveKitUrl(request.LiveKitUrl, allowInsecure, allowLoopback: environment.IsDevelopment());
-            if (liveKitUrl is null) return Problem("Enter the LiveKit server address, for example wss://your-project.livekit.cloud.");
+            if (liveKitUrl is null)
+                return Problem(!allowInsecure && Uri.TryCreate(request.LiveKitUrl?.Trim(), UriKind.Absolute, out var plain) && plain.Scheme is "ws" or "http"
+                    ? "This server only accepts secure LiveKit addresses (wss://). A plain ws:// address works only on a test server where Integrations__AllowInsecureLiveClassHosts is turned on."
+                    : "Enter the LiveKit server address, for example wss://your-project.livekit.cloud.");
             if (string.IsNullOrWhiteSpace(request.LiveKitApiKey) || request.LiveKitApiKey.Trim().Length > 200) return Problem("Enter the LiveKit API key.");
             if (request.LiveKitSecretReference is { Length: > 200 }) return Problem("The secret reference is too long.");
             var hasSecret = !string.IsNullOrEmpty(request.LiveKitApiSecret) || !string.IsNullOrWhiteSpace(request.LiveKitSecretReference)

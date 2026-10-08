@@ -32,12 +32,11 @@ describe('validateJitsiAddress', () => {
 
 describe('validateLiveKitAddress', () => {
   it('accepts wss and https addresses', () => {
-    for (const ok of ['wss://x.livekit.cloud', 'https://lk.school.org', 'ws://localhost:7880', 'ws://127.0.0.1:7880']) expect(validateLiveKitAddress(ok), ok).toBeNull()
+    for (const ok of ['wss://x.livekit.cloud', 'https://lk.school.org', 'ws://localhost:7880', 'ws://127.0.0.1:7880', 'ws://37.60.228.196:7880', 'http://lk.test.org:7880']) expect(validateLiveKitAddress(ok), ok).toBeNull()   // a plain address is for the server to allow or refuse
   })
-  it('refuses blank, plain ws/http and anything carrying sign-in details or a query', () => {
+  it('refuses blank, other kinds of address and anything carrying sign-in details or a query', () => {
     expect(validateLiveKitAddress('  ')).toMatch(/Enter/)
-    expect(validateLiveKitAddress('ws://x.example.org')).toMatch(/wss/)
-    expect(validateLiveKitAddress('ws://192.168.1.5:7880')).toMatch(/wss/)          // only this machine, not the network
+    expect(validateLiveKitAddress('ftp://x.example.org')).toMatch(/wss/)
     expect(validateLiveKitAddress('wss://u:p@x.example.org')).toMatch(/user name/)
     expect(validateLiveKitAddress('wss://x.example.org/?a=1')).toMatch(/query/)
     expect(validateLiveKitAddress('nope')).toMatch(/link/)

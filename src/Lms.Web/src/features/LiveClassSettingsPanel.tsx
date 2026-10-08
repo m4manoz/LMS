@@ -26,14 +26,16 @@ export function validateJitsiAddress(value: string): string | null {
   } catch { return 'Enter the server address as a link, for example https://meet.jit.si.' }
 }
 
-/** A usable LiveKit address: wss (or https), no sign-in details, nothing after the host. Mirrors the server's check. */
+/**
+ * A usable LiveKit address: wss (or https), or a plain ws (or http) one, no sign-in details, nothing after the host.
+ * Whether a plain address is accepted is up to the server (a test server can allow it), which says so when it is not.
+ */
 export function validateLiveKitAddress(value: string): string | null {
   const text = value.trim()
   if (!text) return 'Enter the LiveKit server address, for example wss://your-project.livekit.cloud.'
   try {
     const url = new URL(text)
-    const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)       // a server on this machine, for trying things out
-    if (url.protocol !== 'wss:' && url.protocol !== 'https:' && !(local && (url.protocol === 'ws:' || url.protocol === 'http:'))) return 'Use a wss:// address, for example wss://your-project.livekit.cloud. (ws://localhost is allowed for a test server on this machine.)'
+    if (!['wss:', 'https:', 'ws:', 'http:'].includes(url.protocol)) return 'Use a wss:// address, for example wss://your-project.livekit.cloud.'
     if (url.username || url.password) return 'The address must not contain a user name or password.'
     if (url.search || url.hash) return 'The address must not contain a query or fragment.'
     return null
