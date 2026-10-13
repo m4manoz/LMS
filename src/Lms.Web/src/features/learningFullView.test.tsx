@@ -39,7 +39,7 @@ describe('opening an enrolled course', () => {
 
     await userEvent.click(within(view).getByRole('button', { name: 'Close panel' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
-    expect(screen.getByText('Choose a course to continue learning')).toBeInTheDocument()
+    expect(screen.getByText(/Choose a course to continue learning/)).toBeInTheDocument()
   })
 
   it('closes with the Escape key, and opening another course afterwards starts clean', async () => {
@@ -54,7 +54,7 @@ describe('opening an enrolled course', () => {
 
   it('does not show the course view until a course is chosen', async () => {
     render(<LearningPage />)
-    await screen.findByText('Choose a course to continue learning')
+    await screen.findByText(/Choose a course to continue learning/)
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(screen.queryByRole('navigation', { name: 'Course lessons' })).toBeNull()
   })

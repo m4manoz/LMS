@@ -391,14 +391,17 @@ export default function LearningPage() {
         </TabsContent>
 
         <TabsContent value="courses">
-          <div className="grid gap-4 lg:grid-cols-[300px_minmax(0,1fr)]">
-            <Card className="self-start">
+          <div className="grid gap-4">
+            <Card>
               <CardHeader>
                 <CardTitle>Enrolled courses</CardTitle>
+                <CardDescription>
+                  Choose a course to continue learning. Your lesson position and completion status follow you across sessions.
+                </CardDescription>
               </CardHeader>
-              <CardContent className="flex flex-col gap-2">
+              <CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                 {enrollments.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">
+                  <p className="text-sm text-muted-foreground sm:col-span-2 xl:col-span-3">
                     You are not enrolled in a course yet.
                   </p>
                 ) : (
@@ -413,7 +416,7 @@ export default function LearningPage() {
                         )
                       }
                       className={cn(
-                        "flex flex-col gap-2 rounded-md border border-border px-3 py-2 text-left text-sm hover:bg-muted",
+                        "flex flex-col gap-2 rounded-md border border-border px-4 py-3 text-left text-sm hover:bg-muted",
                         player?.enrollment.id === enrollment.id &&
                           "border-l-4 border-l-primary bg-muted",
                       )}
@@ -434,17 +437,7 @@ export default function LearningPage() {
               </CardContent>
             </Card>
 
-            {!player ? (
-              <Card className="self-start">
-                <CardHeader>
-                  <CardTitle>Choose a course to continue learning</CardTitle>
-                  <CardDescription>
-                    Your lesson position and completion status follow you across
-                    sessions.
-                  </CardDescription>
-                </CardHeader>
-              </Card>
-            ) : (
+            {player ? (
               /* The chosen course takes the whole browser window, like a live class, and closes back to the list. */
               <SidePanel open label={player.course.title} onClose={closePlayer} wide>
               <CourseHome
@@ -677,7 +670,7 @@ export default function LearningPage() {
                 }
               />
               </SidePanel>
-            )}
+            ) : null}
           </div>
         </TabsContent>
       </Tabs>
