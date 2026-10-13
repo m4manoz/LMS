@@ -37,8 +37,14 @@ services:
       # The test server is reached by plain ws:// addresses (no domain or certificate yet); production must use wss://.
       Integrations__AllowInsecureLiveClassHosts: "true"
       Frontend__AllowedOrigins__0: ${PUBLIC_URL}
+      # Class recordings: LiveKit's recording service (Egress) writes MP4 files to the shared recordings volume, and the API picks them up from there.
+      LiveKit__Egress__Enabled: ${LIVEKIT_EGRESS_ENABLED:-false}
+      LiveKit__Egress__Destination: Local
+      LiveKit__Egress__LocalDirectory: /recordings
+      LiveKit__Egress__ContainerPath: /out
     volumes:
       - api-data:/data
+      - recordings:/recordings:ro
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080 && printf \"GET /health/live HTTP/1.0\r\n\r\n\" >&3 && grep -q 200 <&3'"]
       interval: 10s
@@ -52,9 +58,13 @@ services:
     image: livekit/livekit-server:latest
     profiles: ["live"]
     restart: unless-stopped
+    depends_on:
+      - redis
     environment:
       LIVEKIT_CONFIG: |
         port: 7880
+        redis:
+          address: redis:6379
         rtc:
           tcp_port: 7881
           udp_port: 7882
@@ -70,6 +80,33 @@ services:
       - "7881:7881"
       - "7882:7882/udp"
 
+  # Redis and Egress are only needed for class recordings. Egress joins each room as a hidden participant and records it.
+  redis:
+    image: redis:7-alpine
+    profiles: ["live"]
+    restart: unless-stopped
+
+  egress:
+    image: livekit/egress:latest
+    profiles: ["live"]
+    restart: unless-stopped
+    depends_on:
+      - livekit
+      - redis
+    cap_add:
+      - SYS_ADMIN
+    environment:
+      EGRESS_CONFIG_BODY: |
+        api_key: ${LIVEKIT_API_KEY:-unset}
+        api_secret: ${LIVEKIT_API_SECRET:-unset-unset-unset-unset-unset-unset}
+        ws_url: ws://livekit:7880
+        redis:
+          address: redis:6379
+        health_port: 8080
+        log_level: info
+    volumes:
+      - recordings:/out
+
   web:
     image: lms-web:${TAG:-latest}
     restart: unless-stopped
@@ -81,3 +118,4 @@ services:
 volumes:
   db-data:
   api-data:
+  recordings:

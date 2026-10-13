@@ -48,4 +48,4 @@ Schedule a class linked to a course, join as the teacher in one browser and as a
 
 ## Recordings
 
-Recording needs LiveKit's separate recording service (Egress), Redis and a shared folder. It is not part of this setup; see `scripts/livekit-dev.ps1` and the README section "Recording LiveKit classes" for what it needs.
+With `COMPOSE_PROFILES=live` the compose file also runs Redis and LiveKit's recording service (Egress). They write MP4 files to a shared `recordings` volume, which the API reads. To allow recording, add `LIVEKIT_EGRESS_ENABLED=true` to `~/kalash/lms/.env` and run `docker compose up -d`. Recording is heavy on CPU; try one class first. See also `scripts/livekit-dev.ps1` (the same setup for a developer machine) and the README section "Recording LiveKit classes".
