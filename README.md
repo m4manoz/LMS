@@ -257,6 +257,14 @@ Each organization has a public page with courses to browse and search, and an Ap
 
 Staff control the page under Administration → **Landing page** (headline, banners, course rows, reasons, numbers, stories, FAQ, footer) and handle applications under Courses → **Applications**: approving one sends a course invitation. Set `App__PublicUrl` so invitation links point at your site.
 
+## The learner's course home
+
+A learner opens a course from **My learning** and finds everything for it on one page, over the whole browser window: an **Overview** (carry on where you stopped, what is coming up in this course, announcements, the rating), the **Lessons**, **Assessments** (with My results), **Assignments**, **Live classes** (join in place), **Videos**, **Discussion** (forum, course chat and announcements) and **Grades and certificate**. Each tab is the usual page narrowed to that course (pages take `courseId` and `embedded` props); a tab only shows when the person has the permission for it.
+
+Because of that, a learner's sidebar is short: the pages that are done inside a course (Video library, Live classes, Recordings, Attendance, Class chat, Quizzes, Exams, Progress, Assignments, Gradebook, Performance, Attendance reports) are marked `learnerHidden` in `lib/navigation.ts`. A *learner* is someone who can take assessments and cannot manage courses; teachers, administrators and guardians keep the whole menu. The pages still exist, so old links (a class link, a dashboard shortcut) keep working.
+
+Supporting API: `courseId` filters on `live-classes/sessions`, `community/announcements` (the course's and the organization's), `tasks`, `gradebook/me` and `certificates`, and `GET courses/{id}/assessment-results` for a learner's own attempts.
+
 ## Video library: uploads, study tools and organizing
 
 - **Uploading in pieces.** A video is sent as pieces (`Videos:ChunkMegabytes`, default 8) and joined at the end, so a lost connection or a closed tab does not start the upload over: choosing the same file again carries on from the pieces already stored. A piece that fails is tried again a few times. The first piece shows what the file really is, so a file that is not a video is refused at once; the joined file is checked like any upload (virus scanner, bucket). Unfinished uploads are cleared after `Videos:UploadExpiryHours` (default 48). `Videos:MaxMegabytes` still limits one video and `Videos:QuotaMegabytes` (default none) limits what an organization may keep in total.

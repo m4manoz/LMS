@@ -102,11 +102,11 @@ public static class LiveClassEndpoints
             item.ContentAssetId is Guid asset && session.CourseId is Guid course ? $"/api/v1/tenant/courses/{course:D}/assets/{asset:D}" : null)).ToArray());
     }
 
-    private static async Task<IResult> ListSessionsAsync(HttpContext httpContext, LmsDbContext db, CancellationToken cancellationToken)
+    private static async Task<IResult> ListSessionsAsync(HttpContext httpContext, LmsDbContext db, Guid? courseId, CancellationToken cancellationToken)
     {
         if (GetUserId(httpContext) is not Guid userId) return Results.Unauthorized();
         var canManage = HasPermission(httpContext, LmsPermissions.LiveClassManage);
-        var sessions = await db.LiveClassSessions.AsNoTracking().Where(item => canManage
+        var sessions = await db.LiveClassSessions.AsNoTracking().Where(item => courseId == null || item.CourseId == courseId).Where(item => canManage
                 || item.HostUserId == userId
                 || (item.CourseId != null && db.Enrollments.Any(enrollment => enrollment.CourseId == item.CourseId && enrollment.LearnerUserId == userId && (enrollment.Status == Lms.Api.Domain.Learning.EnrollmentStatus.Active || enrollment.Status == Lms.Api.Domain.Learning.EnrollmentStatus.Completed))))
             .OrderBy(item => item.StartAtUtc).Take(200).ToListAsync(cancellationToken);

@@ -58,14 +58,15 @@ export function validateAddVideo(mode: 'upload' | 'link', values: { title: strin
   return null
 }
 
-export default function VideoLibraryPage() {
+/** `courseId` fixes the course: only its videos are shown, with no course picker and no page title (a course's own page uses this). */
+export default function VideoLibraryPage({ courseId: fixedCourseId, embedded = false }: { courseId?: string; embedded?: boolean } = {}) {
   const { session } = useAuth()
   const canManage = session?.permissions.includes('course.manage') ?? false
   const [videos, setVideos] = useState<VideoItem[] | null>(null)
   const [courses, setCourses] = useState<Course[]>([])
   const [usage, setUsage] = useState<Usage | null>(null)
   const [search, setSearch] = useState('')
-  const [courseFilter, setCourseFilter] = useState('All')
+  const [courseFilter, setCourseFilter] = useState(fixedCourseId ?? 'All')
   const [typeFilter, setTypeFilter] = useState('All')
   const [statusFilter, setStatusFilter] = useState('All')
   const [tagFilter, setTagFilter] = useState<string | null>(null)
@@ -81,7 +82,7 @@ export default function VideoLibraryPage() {
 
   const load = useCallback(async () => {
     try {
-      const list = await apiRequest<VideoItem[]>('/api/v1/tenant/videos')
+      const list = await apiRequest<VideoItem[]>(`/api/v1/tenant/videos${fixedCourseId ? `?courseId=${fixedCourseId}` : ''}`)
       setVideos(list)
       setSelected((current) => (current ? list.find((item) => item.id === current.id) ?? current : current))   // keeps an open video up to date while it is converted
     }
@@ -90,8 +91,9 @@ export default function VideoLibraryPage() {
       apiRequest<Usage>('/api/v1/tenant/videos/usage').then((value) => setUsage(value && typeof value === 'object' ? value : null)).catch(() => setUsage(null))
       apiRequest<Course[]>('/api/v1/tenant/courses').then((list) => setCourses(Array.isArray(list) ? list.filter((course) => course.status !== 'Archived') : [])).catch(() => setCourses([]))
     }
-  }, [canManage])
+  }, [canManage, fixedCourseId])
   useEffect(() => { void load() }, [load])
+  useEffect(() => { if (fixedCourseId) setCourseFilter(fixedCourseId) }, [fixedCourseId])
 
   // Videos being converted finish by themselves: check back until none is left.
   const converting = (videos ?? []).some((item) => item.status === 'Processing')
@@ -134,6 +136,7 @@ export default function VideoLibraryPage() {
   }, [videos])
   // A tag nobody uses any more (after deleting or retagging) must not stay chosen with an empty list.
   useEffect(() => { if (tagFilter && !tagCounts.some(([tag]) => tag === tagFilter)) setTagFilter(null) }, [tagCounts, tagFilter])
+  const hitsShown = fixedCourseId ? hits.filter((hit) => (videos ?? []).some((item) => item.id === hit.videoId)) : hits
   const pickedShown = picked.filter((id) => shown.some((video) => video.id === id))
 
   async function deletePicked() {
@@ -158,17 +161,17 @@ export default function VideoLibraryPage() {
 
   return (
     <section className="flex flex-col gap-4 text-foreground">
-      <PageHeader title="Video library" description={canManage ? 'Upload and manage the videos of your courses, put them in lessons, and see how they are watched.' : 'Watch the videos of the courses you are enrolled in. Playback resumes where you left off.'}
+      {embedded ? null : <PageHeader title="Video library" description={canManage ? 'Upload and manage the videos of your courses, put them in lessons, and see how they are watched.' : 'Watch the videos of the courses you are enrolled in. Playback resumes where you left off.'}
         actions={<>
           {canManage && usage ? <span className="text-sm text-muted-foreground">{usage.count} video{usage.count === 1 ? '' : 's'} · {formatBytes(usage.totalBytes)}{usage.quotaBytes ? ` of ${formatBytes(usage.quotaBytes)}` : ''} stored</span> : null}
           {canManage ? <Button onClick={() => { setAdding(true); setSelected(null); setNotice(null) }}><Plus className="mr-1 h-4 w-4" aria-hidden />Add video</Button> : null}
-        </>} />
+        </>} />}
       {selected || adding ? null : <ErrorBanner message={error} />}
       {selected || adding ? null : <NoticeBanner message={notice} />}
 
       <div className="flex flex-wrap items-center gap-3">
         <Input className="max-w-sm" type="search" placeholder="Search videos" aria-label="Search videos" value={search} onChange={(event) => setSearch(event.target.value)} />
-        {courseOptions.length > 1 ? (
+        {courseOptions.length > 1 && !fixedCourseId ? (
           <Select aria-label="Filter by course" className="w-56" value={courseFilter} onChange={(event) => setCourseFilter(event.target.value)}>
             <option value="All">All courses</option>
             {courseOptions.map((course) => <option key={course.id} value={course.id}>{course.title}</option>)}
@@ -201,11 +204,11 @@ export default function VideoLibraryPage() {
         </div>
       ) : null}
 
-      {hits.length > 0 ? (
+      {hitsShown.length > 0 ? (
         <section aria-label="Found in what is said" className="flex flex-col gap-2">
           <h3 className="text-sm font-semibold">Found in what is said</h3>
           <RowList label="Matches in transcripts">
-            {hits.slice(0, 20).map((hit, index) => (
+            {hitsShown.slice(0, 20).map((hit, index) => (
               <ListRow key={hit.videoId + ':' + hit.startSeconds + ':' + index} columns="sm:grid-cols-[minmax(0,1fr)_auto]">
                 <div className="min-w-0"><strong className="block truncate">{hit.videoTitle}</strong><small className="text-muted-foreground">{hit.courseTitle} · at {clock(hit.startSeconds)}</small><p className="truncate text-sm">{hit.text}</p></div>
                 <div className="flex justify-end"><Button type="button" size="sm" variant="secondary" aria-label={'Watch ' + hit.videoTitle + ' from ' + clock(hit.startSeconds)} onClick={() => openAt(hit)}>Watch from {clock(hit.startSeconds)}</Button></div>

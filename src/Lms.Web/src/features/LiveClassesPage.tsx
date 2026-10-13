@@ -91,7 +91,11 @@ export const classroomViews = {
 /** The name of the tool a class is held in, as people know it. */
 export const providerName = (provider: string) => ({ livekit: "In this app", jitsi: "Jitsi", manual: "Meeting link", local: "Placeholder" } as Record<string, string>)[provider.toLowerCase()] ?? provider;
 
-export default function LiveClassesPage({ initialView = "sessions", initialTab = "overview", initialSessionId }: { initialView?: "sessions" | "schedule"; initialTab?: string; initialSessionId?: string }) {
+/**
+ * `courseId` fixes the course: only its classes are listed, a new class belongs to it, and the page has no title (a course's own page uses this;
+ * `embedded` is named `inCourse` inside because this page already has a meeting that is embedded).
+ */
+export default function LiveClassesPage({ initialView = "sessions", initialTab = "overview", initialSessionId, courseId: fixedCourseId, embedded: inCourse = false }: { initialView?: "sessions" | "schedule"; initialTab?: string; initialSessionId?: string; courseId?: string; embedded?: boolean }) {
   const { session } = useAuth();
   const canManage = session?.permissions.includes("liveclass.manage") ?? false;
   const canCollaborate =
@@ -146,7 +150,7 @@ export default function LiveClassesPage({ initialView = "sessions", initialTab =
   async function loadSessions() {
     try {
       const items = await apiRequest<Session[]>(
-        "/api/v1/tenant/live-classes/sessions",
+        `/api/v1/tenant/live-classes/sessions${fixedCourseId ? `?courseId=${fixedCourseId}` : ""}`,
       );
       setSessions(items);
       if (initialSessionId && !linkHandled.current) {
@@ -226,7 +230,7 @@ export default function LiveClassesPage({ initialView = "sessions", initialTab =
 
   useEffect(() => {
     void loadSessions();
-  }, []);
+  }, [fixedCourseId]);
 
   // People join while the class is open, so the list is fetched afresh each time the tab is opened.
   useEffect(() => {
@@ -282,7 +286,7 @@ export default function LiveClassesPage({ initialView = "sessions", initialTab =
     setSelected(null);
     setTitle("Weekly live class");
     setDescription("");
-    setCourseId("");
+    setCourseId(fixedCourseId ?? "");
     setMeetingUrl("");
     setStart(toLocalInput(new Date(Date.now() + 3600000)));
     setEnd(toLocalInput(new Date(Date.now() + 7200000)));
@@ -678,7 +682,12 @@ export default function LiveClassesPage({ initialView = "sessions", initialTab =
 
   return (
     <section className="flex flex-col gap-4 text-foreground">
-      <PageHeader
+      {inCourse ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" onClick={() => void loadSessions()}><RefreshCw className="mr-1.5 h-4 w-4" aria-hidden />Refresh</Button>
+          {canManage && !focused ? <Button onClick={openSchedule}><Plus className="mr-1 h-4 w-4" aria-hidden />Schedule class</Button> : null}
+        </div>
+      ) : <PageHeader
         title={view.title}
         description={view.description}
         actions={
@@ -687,7 +696,7 @@ export default function LiveClassesPage({ initialView = "sessions", initialTab =
             {canManage && !focused ? <Button onClick={openSchedule}><Plus className="mr-1 h-4 w-4" aria-hidden />Schedule class</Button> : null}
           </>
         }
-      />
+      />}
       {!selected ? <ErrorBanner message={error} /> : null}
       {!selected ? <NoticeBanner message={notice} /> : null}
 
@@ -716,12 +725,12 @@ export default function LiveClassesPage({ initialView = "sessions", initialTab =
           <ErrorBanner message={problem} />
           <FormSection title="About the class" description="The class is created through the configured live-class provider.">
             <Field id="live-title" label="Title" required><Input id="live-title" value={title} onChange={(e) => setTitle(e.target.value)} /></Field>
-            <Field id="live-course" label="Course" hint="Learners enrolled in this course will see the class. Leave empty for a class only staff can see.">
+            {fixedCourseId ? null : <Field id="live-course" label="Course" hint="Learners enrolled in this course will see the class. Leave empty for a class only staff can see.">
               <Select id="live-course" value={courseId} onChange={(e) => setCourseId(e.target.value)}>
                 <option value="">No course (staff only)</option>
                 {courses.map((course) => <option key={course.id} value={course.id}>{course.code} · {course.title}</option>)}
               </Select>
-            </Field>
+            </Field>}
             {providerInfo?.requiresMeetingLink ? (
               <Field id="live-link" label="Meeting link" required hint="Create the meeting in Zoom, Google Meet or Teams, then paste its link here. Learners are sent to it.">
                 <Input id="live-link" type="url" placeholder="https://" value={meetingUrl} onChange={(e) => setMeetingUrl(e.target.value)} />

@@ -4,6 +4,8 @@ export type MenuItem = {
   icon: string;
   permissions?: string[];
   roles?: string[];
+  /** A learner does this inside each course's own page (My learning), so the menu does not list it for them. Staff and guardians still see it. */
+  learnerHidden?: boolean;
 };
 export type MenuSubmenu = { label: string; items: MenuItem[] };
 export type MenuGroup = { label: string; submenus: MenuSubmenu[] };
@@ -44,7 +46,7 @@ export const menuGroups: MenuGroup[] = [
       {
         label: "Study tools",
         items: [
-          { id: "video-library", label: "Video library", icon: "🎬", permissions: ["course.read"] },
+          { id: "video-library", label: "Video library", icon: "🎬", permissions: ["course.read"], learnerHidden: true },
           { id: "resources", label: "Learning resources", icon: "📁", permissions: ["course.read"] },
           { id: "offline-learning", label: "Offline learning", icon: "📲", permissions: ["enrollment.read"] },
           { id: "virtual-labs", label: "Virtual labs", icon: "🧪", permissions: ["virtuallab.read"] },
@@ -60,10 +62,10 @@ export const menuGroups: MenuGroup[] = [
       {
         label: "Live learning",
         items: [
-          { id: "live", label: "Live classes", icon: "🎥", permissions: ["liveclass.read"] },
-          { id: "recordings", label: "Recordings", icon: "📹", permissions: ["liveclass.read"] },
-          { id: "attendance", label: "Attendance", icon: "📝", permissions: ["attendance.read"] },
-          { id: "discussions", label: "Class chat", icon: "💬", permissions: ["collaboration.read"] },
+          { id: "live", label: "Live classes", icon: "🎥", permissions: ["liveclass.read"], learnerHidden: true },
+          { id: "recordings", label: "Recordings", icon: "📹", permissions: ["liveclass.read"], learnerHidden: true },
+          { id: "attendance", label: "Attendance", icon: "📝", permissions: ["attendance.read"], learnerHidden: true },
+          { id: "discussions", label: "Class chat", icon: "💬", permissions: ["collaboration.read"], learnerHidden: true },
         ],
       },
     ],
@@ -74,11 +76,11 @@ export const menuGroups: MenuGroup[] = [
       {
         label: "Take and review",
         items: [
-          { id: "quizzes", label: "Quizzes", icon: "📝", permissions: ["assessment.read"] },
-          { id: "assignments", label: "Assignments", icon: "📄", permissions: ["assessment.read"] },
-          { id: "exams", label: "Exams", icon: "🎯", permissions: ["assessment.read"] },
-          { id: "grades", label: "Gradebook", icon: "📊", permissions: ["grade.read"] },
-          { id: "progress", label: "Progress", icon: "📈", permissions: ["progress.read"] },
+          { id: "quizzes", label: "Quizzes", icon: "📝", permissions: ["assessment.read"], learnerHidden: true },
+          { id: "assignments", label: "Assignments", icon: "📄", permissions: ["assessment.read"], learnerHidden: true },
+          { id: "exams", label: "Exams", icon: "🎯", permissions: ["assessment.read"], learnerHidden: true },
+          { id: "grades", label: "Gradebook", icon: "📊", permissions: ["grade.read"], learnerHidden: true },
+          { id: "progress", label: "Progress", icon: "📈", permissions: ["progress.read"], learnerHidden: true },
         ],
       },
     ],
@@ -148,8 +150,8 @@ export const menuGroups: MenuGroup[] = [
         items: [
           { id: "reports", label: "Reports", icon: "📊", permissions: ["report.read"] },
           { id: "learning-analytics", label: "Learning analytics", icon: "📈", permissions: ["report.read"] },
-          { id: "performance", label: "Performance dashboard", icon: "📉", permissions: ["progress.read"] },
-          { id: "attendance-reports", label: "Attendance reports", icon: "📋", permissions: ["attendance.read"] },
+          { id: "performance", label: "Performance dashboard", icon: "📉", permissions: ["progress.read"], learnerHidden: true },
+          { id: "attendance-reports", label: "Attendance reports", icon: "📋", permissions: ["attendance.read"], learnerHidden: true },
         ],
       },
     ],
@@ -189,7 +191,13 @@ export const menuAliases: Record<string, string> = {
   "communication-notifications": "notifications",
 };
 
+/** A learner takes assessments and does not manage courses. Teachers, administrators and guardians are not learners here, whatever else they can do. */
+export function isLearner(permissions: string[]) {
+  return permissions.includes("assessment.attempt") && !permissions.includes("course.manage");
+}
+
 export function canViewMenuItem(item: MenuItem, role: string, permissions: string[]) {
+  if (item.learnerHidden && isLearner(permissions)) return false
   if (item.roles?.includes(role)) return true
   return !item.permissions || item.permissions.some((permission) => permissions.includes(permission))
 }

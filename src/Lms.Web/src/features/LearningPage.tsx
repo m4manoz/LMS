@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import CourseRatingPanel from "./CourseRatingPanel";
-import CourseLiveClasses from "./CourseLiveClasses";
 import LessonBlocks from "@/components/LessonBlocks";
 import SidePanel from "@/components/SidePanel";
+import CourseHome from "./CourseHome";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -88,11 +87,7 @@ type Note = {
   updatedAtUtc: string;
 };
 
-export default function LearningPage({
-  onOpenClass,
-}: {
-  onOpenClass?: (sessionId: string) => void;
-}) {
+export default function LearningPage() {
   const { session } = useAuth();
   const [courses, setCourses] = useState<Course[]>([]);
   const [enrollments, setEnrollments] = useState<Enrollment[]>([]);
@@ -452,62 +447,13 @@ export default function LearningPage({
             ) : (
               /* The chosen course takes the whole browser window, like a live class, and closes back to the list. */
               <SidePanel open label={player.course.title} onClose={closePlayer} wide>
-              <div className="flex flex-col gap-4">
-                <Card>
-                  <CardHeader>
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-xs text-muted-foreground">
-                          {player.course.code} ·{" "}
-                          {player.enrollment.progressPercent}% complete
-                        </p>
-                        <CardTitle className="text-xl">
-                          {player.course.title}
-                        </CardTitle>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Badge>{player.enrollment.status}</Badge>
-                        {player.enrollment.status === "Active" ? (
-                          <Button
-                            variant="softDestructive"
-                            size="sm"
-                            disabled={busy}
-                            onClick={() => void withdraw()}
-                          >
-                            Withdraw
-                          </Button>
-                        ) : null}
-                      </div>
-                    </div>
-                    <CardDescription>
-                      {player.course.description ||
-                        "Continue where you left off."}
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <Progress value={player.enrollment.progressPercent} />
-                  </CardContent>
-                </Card>
-
-                <CourseRatingPanel key={player.course.id} courseId={player.course.id} />
-
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Live classes</CardTitle>
-                    <CardDescription>
-                      The classes of this course. Open one to join it when it is
-                      on.
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <CourseLiveClasses
-                      key={player.course.id}
-                      courseId={player.course.id}
-                      onOpen={onOpenClass}
-                    />
-                  </CardContent>
-                </Card>
-
+              <CourseHome
+                course={player.course}
+                enrollment={player.enrollment}
+                busy={busy}
+                onWithdraw={() => void withdraw()}
+                continueLesson={selectedLesson?.title ?? null}
+                lessons={
                 <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
                   <Card className="self-start">
                     <CardHeader>
@@ -728,7 +674,8 @@ export default function LearningPage({
                     </Card>
                   )}
                 </div>
-              </div>
+                }
+              />
               </SidePanel>
             )}
           </div>

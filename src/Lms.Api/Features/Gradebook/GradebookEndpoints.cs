@@ -125,13 +125,13 @@ public static class GradebookEndpoints
     }
 
     // ---------- learner: own grades ----------
-    private static async Task<IResult> MyGradesAsync(HttpContext httpContext, LmsDbContext db, CancellationToken cancellationToken)
+    private static async Task<IResult> MyGradesAsync(HttpContext httpContext, LmsDbContext db, Guid? courseId, CancellationToken cancellationToken)
     {
         if (GetUserId(httpContext) is not Guid userId) return Results.Unauthorized();
         var courseIds = await db.Enrollments.AsNoTracking()
             .Where(item => item.LearnerUserId == userId && (item.Status == EnrollmentStatus.Active || item.Status == EnrollmentStatus.Completed))
             .Select(item => item.CourseId).Distinct().ToListAsync(cancellationToken);
-        var courses = await db.Courses.AsNoTracking().Where(item => courseIds.Contains(item.Id) && item.Status != CourseStatus.Draft).OrderBy(item => item.Title).ToListAsync(cancellationToken);
+        var courses = await db.Courses.AsNoTracking().Where(item => (courseId == null || item.Id == courseId) && courseIds.Contains(item.Id) && item.Status != CourseStatus.Draft).OrderBy(item => item.Title).ToListAsync(cancellationToken);
         var learner = new List<Guid> { userId };
 
         var result = new List<MyCourseGrades>();

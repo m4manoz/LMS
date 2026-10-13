@@ -154,7 +154,7 @@ function renderActivePage(
     );
   if (activeMenu === "course-catalog") return <CoursesPage mode="catalog" onOpenClass={onOpenClass} />;
   if (activeMenu === "admin-courses") return <CoursesPage mode="authoring" onOpenClass={onOpenClass} />;
-  if (activeMenu === "learning") return <LearningPage onOpenClass={onOpenClass} />;
+  if (activeMenu === "learning") return <LearningPage />;
   if (activeMenu === "learning-paths") return <LearningPathsPage />;
   if (activeMenu === "resources") return <ResourcesPage />;
   if (activeMenu === "categories") return <CategoriesPage />;

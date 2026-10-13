@@ -37,6 +37,8 @@ public static class AssessmentEndpoints
         tenant.MapPut("/assessment-attempts/{attemptId:guid}/answers/{questionId:guid}", SaveAnswerAsync).RequireAuthorization("tenant.assessment.attempt");
         tenant.MapPost("/assessment-attempts/{attemptId:guid}/submit", SubmitAttemptAsync).RequireAuthorization("tenant.assessment.attempt");
         tenant.MapGet("/assessments/{assessmentId:guid}/attempts", ListAttemptsAsync).RequireAuthorization("tenant.grade.manage");
+        // A learner's own attempts at the course's assessments, so they can see their results in one place.
+        tenant.MapGet("/courses/{courseId:guid}/assessment-results", MyResultsAsync).RequireAuthorization("tenant.assessment.attempt");
         tenant.MapPost("/assessment-attempts/{attemptId:guid}/grade", GradeAttemptAsync).RequireAuthorization("tenant.grade.manage");
     }
 
@@ -268,6 +270,16 @@ public static class AssessmentEndpoints
         return Results.Ok(await BuildAttemptAsync(db, attempt, false, cancellationToken));
     }
 
+    // ---------- a learner's own results ----------
+    private static async Task<IResult> MyResultsAsync(HttpContext httpContext, LmsDbContext db, Guid courseId, CancellationToken cancellationToken)
+    {
+        if (GetUserId(httpContext) is not Guid userId) return Results.Unauthorized();
+        var assessments = await db.Assessments.AsNoTracking().Where(item => item.CourseId == courseId && item.Status == AssessmentStatus.Published).ToDictionaryAsync(item => item.Id, item => item.Title, cancellationToken);
+        var ids = assessments.Keys.ToList();
+        var attempts = await db.AssessmentAttempts.AsNoTracking().Where(item => item.LearnerUserId == userId && ids.Contains(item.AssessmentId)).OrderByDescending(item => item.StartedAtUtc).ToListAsync(cancellationToken);
+        return Results.Ok(attempts.Select(item => new MyResultResponse(item.AssessmentId, assessments[item.AssessmentId], ToSummary(item, null))).ToList());
+    }
+
     // ---------- grading ----------
     private static async Task<IResult> ListAttemptsAsync(LmsDbContext db, Guid assessmentId, CancellationToken cancellationToken)
     {
@@ -497,6 +509,7 @@ public sealed record AssessmentDetailResponse(AssessmentResponse Assessment, Que
     int? EffectiveTimeLimitMinutes = null, int? EffectiveAttemptLimit = null, int? AttemptsUsed = null, MyAccommodation? Accommodation = null);
 public sealed record AttemptSummaryResponse(Guid Id, Guid LearnerUserId, int AttemptNumber, string Status, int ScorePoints, int PossiblePoints, decimal? Percentage, DateTimeOffset StartedAtUtc, DateTimeOffset? SubmittedAtUtc, DateTimeOffset? GradedAtUtc,
     bool SubmittedAfterTimeLimit = false, string? LearnerName = null, int Version = 1);
+public sealed record MyResultResponse(Guid AssessmentId, string AssessmentTitle, AttemptSummaryResponse Attempt);
 public sealed record AnswerFileView(string FileName, long SizeBytes);
 public sealed record RubricView(Guid Id, string Name, int TotalPoints, List<RubricCriterion> Criteria);
 public sealed record AttemptQuestionResponse(Guid Id, string Type, string Prompt, string[] Options, string[] CorrectAnswers, int DisplayOrder, int Points, string[] Answers, int ScorePoints, bool? IsCorrect, string? Feedback,

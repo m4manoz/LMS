@@ -278,10 +278,12 @@ public static class CommunityEndpoints
     }
 
     // ---------- announcements ----------
-    private static async Task<IResult> ListAnnouncementsAsync(LmsDbContext db, CancellationToken cancellationToken)
+    /// <summary>With a course, that course's announcements and the organization-wide ones.</summary>
+    private static async Task<IResult> ListAnnouncementsAsync(LmsDbContext db, Guid? courseId, CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
         var items = await db.Announcements.AsNoTracking()
+            .Where(item => courseId == null || item.CourseId == courseId || item.CourseId == null)
             .Where(item => item.ExpiresAtUtc == null || item.ExpiresAtUtc > now)
             .OrderByDescending(item => item.IsPinned).ThenByDescending(item => item.CreatedAtUtc).Take(100).ToListAsync(cancellationToken);
         var names = await AuthorNamesAsync(db, items.Select(item => item.AuthorUserId), cancellationToken);

@@ -48,13 +48,14 @@ function validateForm(courseId: string, form: typeof emptyForm): string | null {
   return null
 }
 
-export default function AssignmentsPage({ initialTab = 'assignments' }: { initialTab?: 'assignments' | 'grading' }) {
+/** `courseId` fixes the course: only its assignments are shown, with no course picker and no page title (a course's own page uses this). */
+export default function AssignmentsPage({ initialTab = 'assignments', courseId: fixedCourseId, embedded = false }: { initialTab?: 'assignments' | 'grading'; courseId?: string; embedded?: boolean }) {
   const { session } = useAuth()
   const canManage = session?.permissions.includes('assessment.manage') ?? false
   const canSubmit = session?.permissions.includes('assessment.attempt') ?? false
   const canGrade = session?.permissions.includes('grade.manage') ?? false
   const [courses, setCourses] = useState<Course[]>([])
-  const [courseId, setCourseId] = useState('')
+  const [courseId, setCourseId] = useState(fixedCourseId ?? '')
   const [formCourseId, setFormCourseId] = useState('')
   const [rubrics, setRubrics] = useState<Rubric[]>([])
   const [assignments, setAssignments] = useState<Assignment[]>([])
@@ -82,9 +83,10 @@ export default function AssignmentsPage({ initialTab = 'assignments' }: { initia
   }
 
   useEffect(() => {
-    void loadAssignments()
+    void loadAssignments(fixedCourseId ?? '')
     apiRequest<Course[]>('/api/v1/tenant/courses').then(setCourses).catch(() => setCourses([]))
-  }, [])
+  }, [fixedCourseId])
+  useEffect(() => { if (fixedCourseId) { setCourseId(fixedCourseId); setSelectedId(null) } }, [fixedCourseId])
 
   // Rubrics of the course the new assignment is for, so it can be scored by one.
   useEffect(() => {
@@ -351,24 +353,24 @@ export default function AssignmentsPage({ initialTab = 'assignments' }: { initia
 
   return (
     <section className="flex flex-col gap-4 text-foreground">
-      <PageHeader
+      {embedded ? null : <PageHeader
         title="Assignments"
         description="Submit work, track deadlines and review feedback."
         actions={<>
           <span className="text-sm text-muted-foreground">{assignments.length} assignment{assignments.length === 1 ? '' : 's'}</span>
           {canManage ? <Button onClick={openNew}><Plus className="mr-1 h-4 w-4" aria-hidden />New assignment</Button> : null}
         </>}
-      />
+      />}
       <ErrorBanner message={error} />
       <NoticeBanner message={notice} />
 
-      <div className="flex max-w-sm flex-col gap-1.5">
+      {fixedCourseId ? null : <div className="flex max-w-sm flex-col gap-1.5">
         <Label htmlFor="assignment-course">Course</Label>
         <Select id="assignment-course" value={courseId} onChange={(e) => { setCourseId(e.target.value); setSelectedId(null); void loadAssignments(e.target.value) }}>
           <option value="">All courses</option>
           {courses.map((course) => <option key={course.id} value={course.id}>{course.code} · {course.title}</option>)}
         </Select>
-      </div>
+      </div>}
 
       {assignments.length === 0 ? <EmptyState>No assignments yet.</EmptyState> : (
         <RowList label="Assignments">

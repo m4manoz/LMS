@@ -29,7 +29,8 @@ public static class TaskEndpoints
         tenant.MapGet("", ListAsync);
     }
 
-    private static async Task<IResult> ListAsync(HttpContext httpContext, LmsDbContext db, DateTimeOffset? from, DateTimeOffset? to, CancellationToken cancellationToken)
+    /// <summary>With a course, only that course's assignments, assessments and live classes.</summary>
+    private static async Task<IResult> ListAsync(HttpContext httpContext, LmsDbContext db, DateTimeOffset? from, DateTimeOffset? to, Guid? courseId, CancellationToken cancellationToken)
     {
         if (GetUserId(httpContext) is not Guid userId) return Results.Unauthorized();
         var now = DateTimeOffset.UtcNow;
@@ -42,7 +43,7 @@ public static class TaskEndpoints
         var items = new List<TaskItem>();
 
         var enrolledCourseIds = await db.Enrollments.AsNoTracking()
-            .Where(item => item.LearnerUserId == userId && (item.Status == EnrollmentStatus.Active || item.Status == EnrollmentStatus.Completed))
+            .Where(item => item.LearnerUserId == userId && (item.Status == EnrollmentStatus.Active || item.Status == EnrollmentStatus.Completed) && (courseId == null || item.CourseId == courseId))
             .Select(item => item.CourseId).ToListAsync(cancellationToken);
 
         // ---- the user's own assignments ----
@@ -91,7 +92,7 @@ public static class TaskEndpoints
         if (HasPermission(httpContext, LmsPermissions.LiveClassRead))
         {
             var sessions = await db.LiveClassSessions.AsNoTracking()
-                .Where(item => item.Status != LiveSessionStatus.Cancelled && item.Status != LiveSessionStatus.Completed && item.EndAtUtc >= windowStart && item.StartAtUtc <= windowEnd)
+                .Where(item => (courseId == null || item.CourseId == courseId) && item.Status != LiveSessionStatus.Cancelled && item.Status != LiveSessionStatus.Completed && item.EndAtUtc >= windowStart && item.StartAtUtc <= windowEnd)
                 .OrderBy(item => item.StartAtUtc).Take(200).ToListAsync(cancellationToken);
             items.AddRange(sessions.Select(item => new TaskItem($"live:{item.Id}", "live-class", item.Title,
                 item.CourseId is Guid courseId ? courseTitles.GetValueOrDefault(courseId) : null, item.StartAtUtc, item.EndAtUtc,

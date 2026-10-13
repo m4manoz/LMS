@@ -34,7 +34,8 @@ export function formatMessageTime(value: string, now = new Date()): string {
   return sameDay ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : date.toLocaleDateString([], { day: 'numeric', month: 'short' })
 }
 
-export default function MessagesPage() {
+/** `courseId` shows just that course's chat (no inbox, no page title): how a course's own page offers its chat. */
+export default function MessagesPage({ courseId: fixedCourseId }: { courseId?: string } = {}) {
   const { session } = useAuth()
   const canSend = session?.permissions.includes('collaboration.manage') ?? false
   const canManageCourses = session?.permissions.includes('course.manage') ?? false
@@ -140,6 +141,9 @@ export default function MessagesPage() {
     await open(id)
   }, 'Unable to open the course chat.')
 
+  // A course's own page opens its chat straight away.
+  useEffect(() => { if (fixedCourseId) void openCourse(fixedCourseId) }, [fixedCourseId])
+
   function clearFile() { setFile(null); if (fileRef.current) fileRef.current.value = '' }
 
   function chooseFile(chosen: File | undefined) {
@@ -201,12 +205,12 @@ export default function MessagesPage() {
 
   return (
     <section className="flex flex-col gap-4 text-foreground">
-      <PageHeader title="Messages" description="Talk to your teachers and chat with your course."
-        actions={<><Button variant="outline" onClick={openCourses}>Course chats</Button>{canSend ? <Button onClick={openNew}><Plus className="mr-1 h-4 w-4" aria-hidden />New message</Button> : null}</>} />
+      {fixedCourseId ? null : <PageHeader title="Messages" description="Talk to your teachers and chat with your course."
+        actions={<><Button variant="outline" onClick={openCourses}>Course chats</Button>{canSend ? <Button onClick={openNew}><Plus className="mr-1 h-4 w-4" aria-hidden />New message</Button> : null}</>} />}
       {!panelOpen ? <ErrorBanner message={error} /> : null}
 
-      <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
-        <Card className="self-start">
+      <div className={fixedCourseId ? "grid gap-4" : "grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]"}>
+        <Card className={cn("self-start", fixedCourseId && "hidden")}>
           <CardHeader><CardTitle>Inbox ({conversations.length}){totalUnread > 0 ? ` · ${totalUnread} unread` : ''}</CardTitle></CardHeader>
           <CardContent className="flex flex-col gap-2">
             {conversations.length === 0 ? <p className="text-sm text-muted-foreground">No conversations yet. Start one with “New message” or open a course chat.</p> : conversations.map((item) => (
@@ -227,7 +231,7 @@ export default function MessagesPage() {
 
         {!selected ? (
           <Card className="self-start">
-            <CardHeader><CardTitle>Select a conversation</CardTitle><CardDescription>Choose one on the left to read and reply.</CardDescription></CardHeader>
+            <CardHeader><CardTitle>{fixedCourseId ? 'Opening the course chat…' : 'Select a conversation'}</CardTitle><CardDescription>{fixedCourseId ? 'Everyone enrolled in this course and its teachers can read it.' : 'Choose one on the left to read and reply.'}</CardDescription></CardHeader>
           </Card>
         ) : (
           <Card className="flex min-h-[28rem] flex-col">

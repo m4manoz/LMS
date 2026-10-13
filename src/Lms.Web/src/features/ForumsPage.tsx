@@ -29,13 +29,14 @@ export function filesProblem(files: File[], alreadyThere = 0): string | null {
 }
 type Course = { id: string; code: string; title: string }
 
-export default function ForumsPage() {
+/** `courseId` fixes the course: only its discussions are shown, new ones belong to it, and the page has no title or course picker (a course's own page uses this). */
+export default function ForumsPage({ courseId: fixedCourseId, embedded = false }: { courseId?: string; embedded?: boolean } = {}) {
   const { session } = useAuth()
   const canPost = session?.permissions.includes('collaboration.manage') ?? false
   const canModerate = session?.permissions.includes('forum.moderate') ?? false
   const [threads, setThreads] = useState<Thread[]>([])
   const [courses, setCourses] = useState<Course[]>([])
-  const [courseFilter, setCourseFilter] = useState('')
+  const [courseFilter, setCourseFilter] = useState(fixedCourseId ?? '')
   const [search, setSearch] = useState('')
   const [detail, setDetail] = useState<ThreadDetail | null>(null)
   const [creating, setCreating] = useState(false)
@@ -57,9 +58,10 @@ export default function ForumsPage() {
   }
 
   useEffect(() => {
-    void loadThreads()
+    if (fixedCourseId) setCourseFilter(fixedCourseId)
+    void loadThreads(fixedCourseId ?? '')
     apiRequest<Course[]>('/api/v1/tenant/courses').then(setCourses).catch(() => setCourses([]))
-  }, [])
+  }, [fixedCourseId])
 
   async function open(id: string) {
     setError(null); setEditing(null); setHistory(null)
@@ -74,7 +76,7 @@ export default function ForumsPage() {
     finally { setBusy(false) }
   }
 
-  const openCreate = () => { setForm({ courseId: '', title: '', body: '' }); setNewFiles([]); setProblem(null); setError(null); setDetail(null); setCreating(true) }
+  const openCreate = () => { setForm({ courseId: fixedCourseId ?? '', title: '', body: '' }); setNewFiles([]); setProblem(null); setError(null); setDetail(null); setCreating(true) }
   const closeCreate = () => setCreating(false)
   const closeDetail = () => { setDetail(null); setReply(''); setReplyFiles([]); setEditing(null); setHistory(null); setNotice(null) }
 
@@ -212,19 +214,20 @@ export default function ForumsPage() {
 
   return (
     <section className="flex flex-col gap-4 text-foreground">
-      <PageHeader title="Forums" description="Ask questions and discuss course topics with your class."
-        actions={<><span className="text-sm text-muted-foreground">{threads.length} discussion{threads.length === 1 ? '' : 's'}</span>{canPost ? <Button onClick={openCreate}><Plus className="mr-1 h-4 w-4" aria-hidden />Start a discussion</Button> : null}</>} />
+      {embedded ? null : <PageHeader title="Forums" description="Ask questions and discuss course topics with your class."
+        actions={<><span className="text-sm text-muted-foreground">{threads.length} discussion{threads.length === 1 ? '' : 's'}</span>{canPost ? <Button onClick={openCreate}><Plus className="mr-1 h-4 w-4" aria-hidden />Start a discussion</Button> : null}</>} />}
       <ErrorBanner message={detail || creating ? null : error} />
       <NoticeBanner message={detail ? null : notice} />
 
       <div className="flex flex-wrap items-center gap-3">
         <Input className="max-w-sm" type="search" placeholder="Search discussions" aria-label="Search discussions" value={search} onChange={(event) => setSearch(event.target.value)} />
-        <div className="w-64">
+        {fixedCourseId ? null : <div className="w-64">
           <Select id="forum-course-filter" aria-label="Course" value={courseFilter} onChange={(e) => { setCourseFilter(e.target.value); void loadThreads(e.target.value) }}>
             <option value="">All discussions</option>
             {courses.map((course) => <option key={course.id} value={course.id}>{course.code} · {course.title}</option>)}
           </Select>
-        </div>
+        </div>}
+        {embedded && canPost ? <Button onClick={openCreate}><Plus className="mr-1 h-4 w-4" aria-hidden />Start a discussion</Button> : null}
       </div>
 
       {threads.length === 0 ? <EmptyState>No discussions yet.</EmptyState> : shown.length === 0 ? <EmptyState>No discussions match.</EmptyState> : (
@@ -347,12 +350,12 @@ export default function ForumsPage() {
         <FormLayout onSubmit={createThread}>
           <ErrorBanner message={problem} />
           <FormSection title="About the discussion" description="Choose a course, or leave it as General for everyone.">
-            <Field id="thread-course" label="Course">
+            {fixedCourseId ? null : <Field id="thread-course" label="Course">
               <Select id="thread-course" value={form.courseId} onChange={(e) => setForm({ ...form, courseId: e.target.value })}>
                 <option value="">General</option>
                 {courses.map((course) => <option key={course.id} value={course.id}>{course.code} · {course.title}</option>)}
               </Select>
-            </Field>
+            </Field>}
             <Field id="thread-title" label="Title" required><Input id="thread-title" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} maxLength={200} /></Field>
             <Field id="thread-body" label="Message" required><Textarea id="thread-body" value={form.body} onChange={(e) => setForm({ ...form, body: e.target.value })} rows={5} maxLength={10000} /></Field>
             <PickedFiles files={newFiles} onPick={(list) => addFiles('new', list)} onRemove={(index) => setNewFiles((current) => current.filter((_, at) => at !== index))} label="Attach files to the discussion" />

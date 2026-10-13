@@ -64,10 +64,11 @@ public static class CertificateEndpoints
         return Results.Created($"/api/v1/tenant/certificate-templates/{template.Id:D}", new CertificateTemplateResponse(template.Id, template.Name, template.Description, template.BodyTemplate, template.IsActive));
     }
 
-    private static async Task<IResult> ListCertificatesAsync(HttpContext httpContext, LmsDbContext db, CancellationToken cancellationToken)
+    private static async Task<IResult> ListCertificatesAsync(HttpContext httpContext, LmsDbContext db, Guid? courseId, CancellationToken cancellationToken)
     {
         if (GetUserId(httpContext) is not Guid userId) return Results.Unauthorized();
         var query = db.Certificates.AsNoTracking();
+        if (courseId is Guid course) query = query.Where(item => item.CourseId == course);
         if (!HasManage(httpContext)) query = query.Where(item => item.LearnerUserId == userId);
         var certificates = await query.OrderByDescending(item => item.IssuedAtUtc).ToListAsync(cancellationToken);
         return Results.Ok(certificates.Select(ToResponse).ToArray());

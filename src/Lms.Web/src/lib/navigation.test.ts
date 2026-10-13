@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canViewMenuItem, menuAliases, menuGroups, menuLabel } from './navigation'
+import { canViewMenuItem, isLearner, menuAliases, menuGroups, menuLabel } from './navigation'
 
 const items = menuGroups.flatMap((group) => group.submenus.flatMap((submenu) => submenu.items))
 
@@ -53,5 +53,46 @@ describe('menu structure', () => {
     const users = items.find((item) => item.id === 'users')!
     expect(canViewMenuItem(users, 'TENANT_ADMIN', ['user.read'])).toBe(true)
     expect(canViewMenuItem(users, 'LEARNER', ['learner.read', 'course.read'])).toBe(false)
+  })
+
+  // The permissions the built-in roles are given (see IdentityEndpoints.DefaultRoles).
+  const learnerPermissions = ['tenant.read', 'course.read', 'learner.read', 'enrollment.read', 'progress.read', 'progress.manage', 'assessment.read', 'assessment.attempt', 'grade.read', 'notification.read', 'certificate.read', 'ai.use', 'liveclass.read', 'attendance.read', 'collaboration.read', 'collaboration.manage', 'recommendation.read', 'gamification.read', 'virtuallab.read']
+  const teacherPermissions = [...learnerPermissions.filter((item) => item !== 'assessment.attempt'), 'course.manage', 'assessment.manage', 'grade.manage', 'liveclass.manage']
+  const guardianPermissions = ['tenant.read', 'course.read', 'learner.read', 'guardian.read', 'enrollment.read', 'progress.read', 'assessment.read', 'grade.read', 'notification.read', 'certificate.read', 'liveclass.read', 'attendance.read', 'collaboration.read']
+  const visible = (role: string, permissions: string[]) => items.filter((item) => canViewMenuItem(item, role, permissions)).map((item) => item.id)
+
+  it('tells a learner from everyone else by what they do: takes assessments and does not manage courses', () => {
+    expect(isLearner(learnerPermissions)).toBe(true)
+    expect(isLearner(teacherPermissions)).toBe(false)
+    expect(isLearner(guardianPermissions)).toBe(false)
+    expect(isLearner([...learnerPermissions, 'course.manage'])).toBe(false)           // a teacher who also learns keeps the full menu
+  })
+
+  it('gives a learner a short menu: what is done in a course is inside the course', () => {
+    const menu = visible('LEARNER', learnerPermissions)
+    expect(menu).toEqual(expect.arrayContaining(['dashboard', 'calendar', 'my-tasks', 'notifications', 'learning', 'course-catalog', 'learning-paths', 'invitations', 'certificates', 'messages']))
+    for (const inCourse of ['video-library', 'live', 'recordings', 'attendance', 'discussions', 'quizzes', 'exams', 'progress', 'assignments', 'grades', 'performance', 'attendance-reports'])
+      expect(menu, inCourse).not.toContain(inCourse)
+    expect(menu.length).toBeLessThanOrEqual(20)
+  })
+
+  it('keeps the whole menu for teachers and guardians', () => {
+    const teacher = visible('TEACHER', teacherPermissions)
+    for (const inCourse of ['video-library', 'live', 'recordings', 'attendance', 'quizzes', 'assignments', 'grades']) expect(teacher, inCourse).toContain(inCourse)
+    const guardian = visible('GUARDIAN', guardianPermissions)
+    for (const item of ['live', 'recordings', 'attendance', 'quizzes', 'grades']) expect(guardian, item).toContain(item)
+  })
+
+  it('leaves no group or submenu empty for a learner, so none shows as a bare heading', () => {
+    const shown = new Set(visible('LEARNER', learnerPermissions))
+    const groups = menuGroups.filter((group) => group.submenus.some((submenu) => submenu.items.some((item) => shown.has(item.id))))
+    expect(groups.map((group) => group.label)).not.toContain('Classroom')
+    expect(groups.map((group) => group.label)).not.toContain('Assessment')
+    for (const group of groups) for (const submenu of group.submenus.filter((entry) => entry.items.some((item) => shown.has(item.id)))) expect(submenu.items.some((item) => shown.has(item.id))).toBe(true)
+  })
+
+  it('only hides pages from learners that their course page covers', () => {
+    const hidden = items.filter((item) => item.learnerHidden).map((item) => item.id).sort()
+    expect(hidden).toEqual(['assignments', 'attendance', 'attendance-reports', 'discussions', 'exams', 'grades', 'live', 'performance', 'progress', 'quizzes', 'recordings', 'video-library'])
   })
 })

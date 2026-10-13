@@ -7,7 +7,6 @@ const request = vi.fn()
 vi.mock('@/lib/api', async () => ({ ...(await vi.importActual<typeof import('@/lib/api')>('@/lib/api')), apiRequest: (...args: unknown[]) => request(...args) }))
 vi.mock('@/lib/auth', () => ({ useAuth: () => ({ session: { accessToken: 't', permissions: ['course.read'], user: { id: 'me', displayName: 'Ada' } } }) }))
 vi.mock('./CourseRatingPanel', () => ({ default: () => null }))
-vi.mock('./CourseLiveClasses', () => ({ default: () => null }))
 vi.mock('@/components/LessonBlocks', () => ({ default: () => <p>Lesson content</p> }))
 
 const course = { id: 'c1', code: 'MATH-1', title: 'Algebra', description: 'Numbers and symbols.', status: 'Published' }
@@ -34,7 +33,8 @@ describe('opening an enrolled course', () => {
     await userEvent.click(await screen.findByRole('button', { name: /Algebra/ }))
     const view = await screen.findByRole('dialog', { name: 'Algebra' })
     expect(view.className).toContain('max-w-none')                                              // the whole width, not the narrow side panel
-    expect(within(view).getByRole('navigation', { name: 'Course lessons' })).toBeInTheDocument()
+    await userEvent.click(within(view).getByRole('tab', { name: 'Lessons' }))
+    expect(await within(view).findByRole('navigation', { name: 'Course lessons' })).toBeInTheDocument()
     expect(within(view).getByText('Numbers and symbols.')).toBeInTheDocument()
 
     await userEvent.click(within(view).getByRole('button', { name: 'Close panel' }))

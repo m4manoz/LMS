@@ -15,14 +15,20 @@ import { useAuth } from "../lib/auth";
 import { availability, fromLocalInput, type Assessment, type AssessmentDetail, type Attempt, type Course } from "../lib/assessments";
 import AssessmentAccommodationsPanel from "./AssessmentAccommodationsPanel";
 import AssessmentAttemptPanel from "./AssessmentAttemptPanel";
+import AssessmentResults from "./AssessmentResults";
 import AssessmentGradingPanel from "./AssessmentGradingPanel";
 import AssessmentQuestionsPanel from "./AssessmentQuestionsPanel";
 import AssessmentRubricsPanel from "./AssessmentRubricsPanel";
 
-export default function AssessmentsPage({ initialTab = "overview" }: { initialTab?: "overview" | "questions" | "grading" }) {
+/**
+ * `courseId` fixes the course (the page then shows only that course's assessments, with no course picker and no page title):
+ * it is how a course's own page shows its assessments.
+ */
+export default function AssessmentsPage({ initialTab = "overview", courseId: fixedCourseId, embedded = false }: { initialTab?: "overview" | "questions" | "grading"; courseId?: string; embedded?: boolean }) {
   const { session } = useAuth();
   const [courses, setCourses] = useState<Course[]>([]);
-  const [courseId, setCourseId] = useState("");
+  const [courseId, setCourseId] = useState(fixedCourseId ?? "");
+  const [resultsKey, setResultsKey] = useState(0);
   const [assessments, setAssessments] = useState<Assessment[]>([]);
   const [selectedAssessment, setSelectedAssessment] = useState<AssessmentDetail | null>(null);
   const [creating, setCreating] = useState(false);
@@ -45,9 +51,10 @@ export default function AssessmentsPage({ initialTab = "overview" }: { initialTa
   const canAttempt = session?.permissions.includes("assessment.attempt") ?? false;
   const canGrade = session?.permissions.includes("grade.manage") ?? false;
 
+  useEffect(() => { if (fixedCourseId) setCourseId(fixedCourseId); }, [fixedCourseId]);
   useEffect(() => {
-    void loadCourses();
-  }, [session?.accessToken]);
+    if (!fixedCourseId) void loadCourses();
+  }, [session?.accessToken, fixedCourseId]);
   useEffect(() => {
     if (courseId) void loadAssessments(courseId);
   }, [courseId]);
@@ -190,7 +197,7 @@ export default function AssessmentsPage({ initialTab = "overview" }: { initialTa
   const attemptsLeft = detail?.attemptsUsed != null ? attemptsAllowed - detail.attemptsUsed : null;
   const when = detail ? availability(detail.assessment) : "open";
   const overviewView = !detail ? null : attempt ? (
-    <AssessmentAttemptPanel key={attempt.attempt.id} attempt={attempt} canAttempt={canAttempt} onChange={setAttempt} />
+    <AssessmentAttemptPanel key={attempt.attempt.id} attempt={attempt} canAttempt={canAttempt} onChange={(next) => { setAttempt(next); setResultsKey((value) => value + 1); }} />
   ) : (
     <Card>
       <CardHeader>
@@ -275,7 +282,7 @@ export default function AssessmentsPage({ initialTab = "overview" }: { initialTa
 
   return (
     <section className="flex flex-col gap-4 text-foreground">
-      <PageHeader
+      {embedded ? null : <PageHeader
         title="Assessments"
         description="Take assessments, author questions and grade submissions."
         actions={
@@ -291,11 +298,11 @@ export default function AssessmentsPage({ initialTab = "overview" }: { initialTa
             ) : null}
           </>
         }
-      />
+      />}
       {panelOpen ? null : <ErrorBanner message={error} />}
       <NoticeBanner message={notice} />
 
-      <div className="flex max-w-md flex-col gap-1.5">
+      {fixedCourseId ? null : <div className="flex max-w-md flex-col gap-1.5">
         <Label htmlFor="assessment-course">Course</Label>
         <Select
           id="assessment-course"
@@ -313,7 +320,7 @@ export default function AssessmentsPage({ initialTab = "overview" }: { initialTa
             </option>
           ))}
         </Select>
-      </div>
+      </div>}
 
       {canManage ? (
         <Tabs value={area} onValueChange={setArea}>
@@ -329,6 +336,7 @@ export default function AssessmentsPage({ initialTab = "overview" }: { initialTa
       ) : (
         assessmentsArea
       )}
+      {canAttempt && !canManage && courseId ? <AssessmentResults courseId={courseId} reloadKey={resultsKey} /> : null}
 
       <SidePanel open={panelOpen} label={creating ? "New assessment" : "Assessment details"} onClose={closePanel}>
         <div className="flex min-w-0 flex-col gap-4">
