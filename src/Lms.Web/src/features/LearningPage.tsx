@@ -3,6 +3,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import CourseRatingPanel from "./CourseRatingPanel";
 import CourseLiveClasses from "./CourseLiveClasses";
 import LessonBlocks from "@/components/LessonBlocks";
+import SidePanel from "@/components/SidePanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -159,6 +160,12 @@ export default function LearningPage({
     } finally {
       setBusy(false);
     }
+  }
+
+  /** Closes the course view and goes back to the list of courses. */
+  function closePlayer() {
+    setPlayer(null);
+    setSelectedLessonId(null);
   }
 
   async function openPlayer(courseId: string, learnerUserId?: string) {
@@ -443,6 +450,8 @@ export default function LearningPage({
                 </CardHeader>
               </Card>
             ) : (
+              /* The chosen course takes the whole browser window, like a live class, and closes back to the list. */
+              <SidePanel open label={player.course.title} onClose={closePlayer} wide>
               <div className="flex flex-col gap-4">
                 <Card>
                   <CardHeader>
@@ -499,7 +508,7 @@ export default function LearningPage({
                   </CardContent>
                 </Card>
 
-                <div className="grid gap-4 xl:grid-cols-[220px_minmax(0,1fr)]">
+                <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
                   <Card className="self-start">
                     <CardHeader>
                       <CardTitle>Lessons</CardTitle>
@@ -720,6 +729,7 @@ export default function LearningPage({
                   )}
                 </div>
               </div>
+              </SidePanel>
             )}
           </div>
         </TabsContent>
